@@ -1,0 +1,23 @@
+{
+  "name": "sap-adt-mcp",
+  "version": "1.0.0",
+  "description": "MCP server for SAP ABAP Development Tools (ADT) REST API",
+  "type": "module",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc --watch",
+    "start": "node dist/index.js",
+    "dev": "tsc && node dist/index.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "latest",
+    "axios": "^1.12.2",
+    "dotenv": "^16.4.7",
+    "zod": "^3.22.4"
+  },
+  "devDependencies": {
+    "@types/node": "^20.10.0",
+    "typescript": "^5.3.0"
+  }
+}
