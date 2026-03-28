@@ -15,6 +15,10 @@ const FunctionModuleSchema = z.object({
   function_name: z.string(),
 });
 const SqlSchema = z.object({ query: z.string() });
+const SearchObjectSchema = z.object({
+  query: z.string(),
+  max_results: z.number().optional(),
+});
 const CreateProgramSchema = z.object({
   name: z.string(),
   description: z.string(),
@@ -26,6 +30,66 @@ const CreateCdsViewSchema = z.object({
   description: z.string(),
   source: z.string(),
   package: z.string().optional(),
+});
+
+// Transport schemas
+const TransportInfoSchema = z.object({
+  uri: z.string(),
+  devclass: z.string(),
+  operation: z.string().optional(),
+});
+const CreateTransportSchema = z.object({
+  devclass: z.string(),
+  description: z.string(),
+  ref: z.string().optional(),
+  operation: z.string().optional(),
+});
+const TransportNumberSchema = z.object({ transport_number: z.string() });
+
+// Trace schemas
+const TraceUserSchema = z.object({ user: z.string().optional() });
+const TraceIdSchema = z.object({ trace_id: z.string() });
+const CreateTraceConfigSchema = z.object({
+  object_name: z.string(),
+  process_type: z.string().optional(),
+  description: z.string().optional(),
+});
+const TraceConfigIdSchema = z.object({ config_id: z.string() });
+
+// Service binding schemas
+const ServiceBindingSchema = z.object({
+  binding_name: z.string(),
+  binding_version: z.string(),
+});
+
+// Debugger schemas
+const DebuggerListenSchema = z.object({
+  terminal_id: z.string().optional(),
+  ide_id: z.string().optional(),
+  user: z.string().optional(),
+});
+const DebuggerBreakpointSchema = z.object({
+  uri: z.string(),
+  line: z.number(),
+  user: z.string().optional(),
+});
+const DebuggerBreakpointIdSchema = z.object({ breakpoint_id: z.string() });
+const DebuggerStepSchema = z.object({
+  step_type: z.enum([
+    "stepInto", "stepOver", "stepReturn", "stepContinue",
+    "stepRunToLine", "stepJumpToLine", "terminateDebuggee",
+  ]),
+  uri: z.string().optional(),
+});
+const DebuggerGotoStackSchema = z.object({
+  stack_type: z.string(),
+  position: z.number(),
+});
+const DebuggerVariablesSchema = z.object({ variable_names: z.array(z.string()) });
+const DebuggerChildVariablesSchema = z.object({ variable_name: z.string() });
+const DebuggerSetVariableSchema = z.object({
+  variable_name: z.string(),
+  value: z.string(),
 });
 
 export function createMcpServer(config: AdtConfig): Server {
@@ -133,6 +197,405 @@ export function createMcpServer(config: AdtConfig): Server {
         },
       },
       {
+        name: "get_function_group",
+        description: "Fetch ABAP function group source code from SAP system",
+        inputSchema: {
+          type: "object" as const,
+          properties: { name: { type: "string", description: "Function group name (e.g. SVAT)" } },
+          required: ["name"],
+        },
+      },
+      {
+        name: "get_include",
+        description: "Fetch ABAP include source code from SAP system",
+        inputSchema: {
+          type: "object" as const,
+          properties: { name: { type: "string", description: "Include name (e.g. LSVATF01)" } },
+          required: ["name"],
+        },
+      },
+      {
+        name: "get_interface",
+        description: "Fetch ABAP interface source code from SAP system",
+        inputSchema: {
+          type: "object" as const,
+          properties: { name: { type: "string", description: "Interface name (e.g. IF_ABAP_TIMER_HANDLER)" } },
+          required: ["name"],
+        },
+      },
+      {
+        name: "get_table",
+        description: "Fetch ABAP database table definition from SAP system",
+        inputSchema: {
+          type: "object" as const,
+          properties: { name: { type: "string", description: "Table name (e.g. VBAK)" } },
+          required: ["name"],
+        },
+      },
+      {
+        name: "get_domain",
+        description: "Fetch DDIC domain definition from SAP system",
+        inputSchema: {
+          type: "object" as const,
+          properties: { name: { type: "string", description: "Domain name (e.g. MATNR)" } },
+          required: ["name"],
+        },
+      },
+      {
+        name: "get_transaction",
+        description: "Fetch ABAP transaction details (package, application component) from SAP system",
+        inputSchema: {
+          type: "object" as const,
+          properties: { name: { type: "string", description: "Transaction code (e.g. VA01)" } },
+          required: ["name"],
+        },
+      },
+      {
+        name: "get_package",
+        description: "Fetch ABAP package contents (list of objects with types and descriptions) from SAP system",
+        inputSchema: {
+          type: "object" as const,
+          properties: { name: { type: "string", description: "Package name (e.g. $TMP)" } },
+          required: ["name"],
+        },
+      },
+      {
+        name: "search_object",
+        description: "Search for ABAP repository objects by name pattern. Supports wildcards (*) for partial matches.",
+        inputSchema: {
+          type: "object" as const,
+          properties: {
+            query: { type: "string", description: "Search query (e.g. Z_MY* or CL_ABAP*)" },
+            max_results: { type: "number", description: "Maximum results to return (default: 100)" },
+          },
+          required: ["query"],
+        },
+      },
+      // --- Transport Management ---
+      {
+        name: "get_transport_info",
+        description: "Check transport info for an ABAP object. Returns available transports and lock status.",
+        inputSchema: {
+          type: "object" as const,
+          properties: {
+            uri: { type: "string", description: "Object URI (e.g. /sap/bc/adt/programs/programs/ztest)" },
+            devclass: { type: "string", description: "Development class/package (e.g. ZPACKAGE)" },
+            operation: { type: "string", description: "Operation (default: I_CTS_OBJECT_CHECK)" },
+          },
+          required: ["uri", "devclass"],
+        },
+      },
+      {
+        name: "create_transport",
+        description: "Create a new transport request in the SAP system",
+        inputSchema: {
+          type: "object" as const,
+          properties: {
+            devclass: { type: "string", description: "Development class/package (e.g. ZPACKAGE)" },
+            description: { type: "string", description: "Transport description text" },
+            ref: { type: "string", description: "Object reference URI" },
+            operation: { type: "string", description: "Operation (default: I_CTS_OBJECT_CHECK)" },
+          },
+          required: ["devclass", "description"],
+        },
+      },
+      {
+        name: "list_user_transports",
+        description: "List all modifiable transport requests for the current SAP user. Returns TR number, type, status, date, and description.",
+        inputSchema: {
+          type: "object" as const,
+          properties: {},
+          required: [],
+        },
+      },
+      {
+        name: "get_transport",
+        description: "Get full details of a transport request by number. Returns description, status, owner, target system, tasks, and object list.",
+        inputSchema: {
+          type: "object" as const,
+          properties: {
+            transport_number: { type: "string", description: "Transport number (e.g. EUPK902297)" },
+          },
+          required: ["transport_number"],
+        },
+      },
+      {
+        name: "release_transport",
+        description: "Release a transport request for import into target systems",
+        inputSchema: {
+          type: "object" as const,
+          properties: {
+            transport_number: { type: "string", description: "Transport number (e.g. DEVK900123)" },
+          },
+          required: ["transport_number"],
+        },
+      },
+      {
+        name: "delete_transport",
+        description: "Delete a transport request from the SAP system",
+        inputSchema: {
+          type: "object" as const,
+          properties: {
+            transport_number: { type: "string", description: "Transport number (e.g. DEVK900123)" },
+          },
+          required: ["transport_number"],
+        },
+      },
+      {
+        name: "list_system_users",
+        description: "List SAP system users. Useful for transport ownership and user lookups.",
+        inputSchema: {
+          type: "object" as const,
+          properties: {},
+          required: [],
+        },
+      },
+      // --- Trace Management ---
+      {
+        name: "list_traces",
+        description: "List ABAP runtime traces (SAT/SE30) for a user",
+        inputSchema: {
+          type: "object" as const,
+          properties: {
+            user: { type: "string", description: "SAP username (default: current user)" },
+          },
+          required: [],
+        },
+      },
+      {
+        name: "get_trace_hitlist",
+        description: "Get performance hit list for a trace (most expensive calls)",
+        inputSchema: {
+          type: "object" as const,
+          properties: {
+            trace_id: { type: "string", description: "Trace ID from list_traces" },
+          },
+          required: ["trace_id"],
+        },
+      },
+      {
+        name: "get_trace_db_access",
+        description: "Get database access statistics for a trace",
+        inputSchema: {
+          type: "object" as const,
+          properties: {
+            trace_id: { type: "string", description: "Trace ID from list_traces" },
+          },
+          required: ["trace_id"],
+        },
+      },
+      {
+        name: "get_trace_statements",
+        description: "Get aggregated call tree with statement-level performance for a trace",
+        inputSchema: {
+          type: "object" as const,
+          properties: {
+            trace_id: { type: "string", description: "Trace ID from list_traces" },
+          },
+          required: ["trace_id"],
+        },
+      },
+      {
+        name: "delete_trace",
+        description: "Delete a runtime trace",
+        inputSchema: {
+          type: "object" as const,
+          properties: {
+            trace_id: { type: "string", description: "Trace ID to delete" },
+          },
+          required: ["trace_id"],
+        },
+      },
+      {
+        name: "create_trace_config",
+        description: "Create a trace collection configuration to capture an ABAP runtime trace",
+        inputSchema: {
+          type: "object" as const,
+          properties: {
+            object_name: { type: "string", description: "Object name to trace (e.g. program or transaction)" },
+            process_type: { type: "string", description: "Process type: HTTP, DIALOG, RFC, etc. (default: HTTP)" },
+            description: { type: "string", description: "Description for the trace configuration" },
+          },
+          required: ["object_name"],
+        },
+      },
+      {
+        name: "delete_trace_config",
+        description: "Delete a trace collection configuration",
+        inputSchema: {
+          type: "object" as const,
+          properties: {
+            config_id: { type: "string", description: "Configuration ID to delete" },
+          },
+          required: ["config_id"],
+        },
+      },
+      // --- Service Binding ---
+      {
+        name: "get_binding_details",
+        description: "Get OData service binding details (service URLs, versions, status)",
+        inputSchema: {
+          type: "object" as const,
+          properties: {
+            binding_name: { type: "string", description: "Service binding name (e.g. ZUI_TRAVEL_O4)" },
+          },
+          required: ["binding_name"],
+        },
+      },
+      {
+        name: "publish_service_binding",
+        description: "Publish an OData service binding to make it accessible",
+        inputSchema: {
+          type: "object" as const,
+          properties: {
+            binding_name: { type: "string", description: "Service binding name" },
+            binding_version: { type: "string", description: "Service version (e.g. 0001)" },
+          },
+          required: ["binding_name", "binding_version"],
+        },
+      },
+      {
+        name: "unpublish_service_binding",
+        description: "Unpublish an OData service binding",
+        inputSchema: {
+          type: "object" as const,
+          properties: {
+            binding_name: { type: "string", description: "Service binding name" },
+            binding_version: { type: "string", description: "Service version (e.g. 0001)" },
+          },
+          required: ["binding_name", "binding_version"],
+        },
+      },
+      // --- Debugger ---
+      {
+        name: "start_debugger_listener",
+        description: "Start an ABAP debugger listener. Opens a stateful session and waits for a debug event. Must call stop_debugger_listener when done.",
+        inputSchema: {
+          type: "object" as const,
+          properties: {
+            terminal_id: { type: "string", description: "Terminal identifier (default: MCP_TERMINAL)" },
+            ide_id: { type: "string", description: "IDE identifier (default: MCP_IDE)" },
+            user: { type: "string", description: "SAP username to debug (default: current user)" },
+          },
+          required: [],
+        },
+      },
+      {
+        name: "stop_debugger_listener",
+        description: "Stop the debugger listener and close the stateful debug session",
+        inputSchema: {
+          type: "object" as const,
+          properties: {
+            terminal_id: { type: "string", description: "Terminal identifier (default: MCP_TERMINAL)" },
+            ide_id: { type: "string", description: "IDE identifier (default: MCP_IDE)" },
+            user: { type: "string", description: "SAP username (default: current user)" },
+          },
+          required: [],
+        },
+      },
+      {
+        name: "set_debugger_breakpoint",
+        description: "Set a breakpoint at a specific source location in the debugger",
+        inputSchema: {
+          type: "object" as const,
+          properties: {
+            uri: { type: "string", description: "Object source URI (e.g. /sap/bc/adt/programs/programs/ztest/source/main)" },
+            line: { type: "number", description: "Line number for breakpoint" },
+            user: { type: "string", description: "SAP username (default: current user)" },
+          },
+          required: ["uri", "line"],
+        },
+      },
+      {
+        name: "delete_debugger_breakpoint",
+        description: "Remove a breakpoint from the debugger",
+        inputSchema: {
+          type: "object" as const,
+          properties: {
+            breakpoint_id: { type: "string", description: "Breakpoint ID to delete" },
+          },
+          required: ["breakpoint_id"],
+        },
+      },
+      {
+        name: "attach_debugger",
+        description: "Attach the debugger to a running ABAP session",
+        inputSchema: {
+          type: "object" as const,
+          properties: {
+            debug_mode: { type: "string", description: "Debugging mode (default: user)" },
+          },
+          required: [],
+        },
+      },
+      {
+        name: "get_debugger_stack",
+        description: "Get the current call stack in the debugger",
+        inputSchema: {
+          type: "object" as const,
+          properties: {},
+          required: [],
+        },
+      },
+      {
+        name: "get_debugger_variables",
+        description: "Get variable values in the current debug context",
+        inputSchema: {
+          type: "object" as const,
+          properties: {
+            variable_names: { type: "array", description: "Array of variable names to inspect" },
+          },
+          required: ["variable_names"],
+        },
+      },
+      {
+        name: "get_debugger_child_variables",
+        description: "Get child/nested variable values (structure components, table rows)",
+        inputSchema: {
+          type: "object" as const,
+          properties: {
+            variable_name: { type: "string", description: "Parent variable name to expand" },
+          },
+          required: ["variable_name"],
+        },
+      },
+      {
+        name: "debugger_step",
+        description: "Execute a debug step (into, over, return, continue, run-to-line, jump-to-line, terminate)",
+        inputSchema: {
+          type: "object" as const,
+          properties: {
+            step_type: { type: "string", description: "Step type: stepInto, stepOver, stepReturn, stepContinue, stepRunToLine, stepJumpToLine, terminateDebuggee" },
+            uri: { type: "string", description: "Source URI (required for stepRunToLine/stepJumpToLine)" },
+          },
+          required: ["step_type"],
+        },
+      },
+      {
+        name: "debugger_goto_stack",
+        description: "Navigate to a specific stack frame in the debugger",
+        inputSchema: {
+          type: "object" as const,
+          properties: {
+            stack_type: { type: "string", description: "Stack type identifier" },
+            position: { type: "number", description: "Stack position (0-based)" },
+          },
+          required: ["stack_type", "position"],
+        },
+      },
+      {
+        name: "set_debugger_variable_value",
+        description: "Set a variable value during debugging",
+        inputSchema: {
+          type: "object" as const,
+          properties: {
+            variable_name: { type: "string", description: "Variable name to modify" },
+            value: { type: "string", description: "New value to set" },
+          },
+          required: ["variable_name", "value"],
+        },
+      },
+      {
         name: "get_csrf_token",
         description: "Fetch a CSRF token and session cookie from the SAP system. Useful for making authenticated POST/PUT/DELETE requests to ADT or other SAP ICF services.",
         inputSchema: {
@@ -209,6 +672,235 @@ export function createMcpServer(config: AdtConfig): Server {
             `/sap/bc/adt/ddic/ddl/sources/${encodeURIComponent(cdsName.toUpperCase())}/source/main`
           );
           return { content: [{ type: "text", text: source }] };
+        }
+
+        case "get_function_group": {
+          const { name: fgName } = NameSchema.parse(args);
+          const source = await client.getSource(
+            `/sap/bc/adt/functions/groups/${encodeURIComponent(fgName.toUpperCase())}/source/main`
+          );
+          return { content: [{ type: "text", text: source }] };
+        }
+
+        case "get_include": {
+          const { name: inclName } = NameSchema.parse(args);
+          const source = await client.getSource(
+            `/sap/bc/adt/programs/includes/${encodeURIComponent(inclName.toUpperCase())}/source/main`
+          );
+          return { content: [{ type: "text", text: source }] };
+        }
+
+        case "get_interface": {
+          const { name: ifName } = NameSchema.parse(args);
+          const source = await client.getSource(
+            `/sap/bc/adt/oo/interfaces/${encodeURIComponent(ifName.toUpperCase())}/source/main`
+          );
+          return { content: [{ type: "text", text: source }] };
+        }
+
+        case "get_table": {
+          const { name: tableName } = NameSchema.parse(args);
+          const source = await client.getSource(
+            `/sap/bc/adt/ddic/tables/${encodeURIComponent(tableName.toUpperCase())}/source/main`
+          );
+          return { content: [{ type: "text", text: source }] };
+        }
+
+        case "get_domain": {
+          const { name: domName } = NameSchema.parse(args);
+          const encoded = encodeURIComponent(domName.toUpperCase());
+          const result = await client.getSourceOrMetadata(
+            `/sap/bc/adt/ddic/domains/${encoded}/source/main`,
+            `/sap/bc/adt/ddic/domains/${encoded}`
+          );
+          return { content: [{ type: "text", text: result }] };
+        }
+
+        case "get_transaction": {
+          const { name: txName } = NameSchema.parse(args);
+          const details = await client.getTransactionDetails(txName);
+          return { content: [{ type: "text", text: details }] };
+        }
+
+        case "get_package": {
+          const { name: pkgName } = NameSchema.parse(args);
+          const contents = await client.getPackageContents(pkgName);
+          return { content: [{ type: "text", text: contents }] };
+        }
+
+        case "search_object": {
+          const { query, max_results } = SearchObjectSchema.parse(args);
+          const results = await client.searchObject(query, max_results);
+          return { content: [{ type: "text", text: results }] };
+        }
+
+        // --- Transport Management ---
+        case "get_transport_info": {
+          const { uri, devclass, operation } = TransportInfoSchema.parse(args);
+          const result = await client.getTransportInfo(uri, devclass, operation);
+          return { content: [{ type: "text", text: result }] };
+        }
+
+        case "create_transport": {
+          const { devclass, description, ref, operation } = CreateTransportSchema.parse(args);
+          const result = await client.createTransport(devclass, description, ref, operation);
+          return { content: [{ type: "text", text: result }] };
+        }
+
+        case "list_user_transports": {
+          const result = await client.listUserTransports();
+          return { content: [{ type: "text", text: result || "(no transports found)" }] };
+        }
+
+        case "get_transport": {
+          const { transport_number } = TransportNumberSchema.parse(args);
+          const result = await client.getTransport(transport_number);
+          return { content: [{ type: "text", text: result }] };
+        }
+
+        case "release_transport": {
+          const { transport_number } = TransportNumberSchema.parse(args);
+          const result = await client.releaseTransport(transport_number);
+          return { content: [{ type: "text", text: result }] };
+        }
+
+        case "delete_transport": {
+          const { transport_number } = TransportNumberSchema.parse(args);
+          const result = await client.deleteTransport(transport_number);
+          return { content: [{ type: "text", text: result }] };
+        }
+
+        case "list_system_users": {
+          const result = await client.getSystemUsers();
+          return { content: [{ type: "text", text: result }] };
+        }
+
+        // --- Trace Management ---
+        case "list_traces": {
+          const { user } = TraceUserSchema.parse(args);
+          const result = await client.listTraces(user);
+          return { content: [{ type: "text", text: result }] };
+        }
+
+        case "get_trace_hitlist": {
+          const { trace_id } = TraceIdSchema.parse(args);
+          const result = await client.getTraceHitlist(trace_id);
+          return { content: [{ type: "text", text: result }] };
+        }
+
+        case "get_trace_db_access": {
+          const { trace_id } = TraceIdSchema.parse(args);
+          const result = await client.getTraceDbAccess(trace_id);
+          return { content: [{ type: "text", text: result }] };
+        }
+
+        case "get_trace_statements": {
+          const { trace_id } = TraceIdSchema.parse(args);
+          const result = await client.getTraceStatements(trace_id);
+          return { content: [{ type: "text", text: result }] };
+        }
+
+        case "delete_trace": {
+          const { trace_id } = TraceIdSchema.parse(args);
+          const result = await client.deleteTrace(trace_id);
+          return { content: [{ type: "text", text: result }] };
+        }
+
+        case "create_trace_config": {
+          const { object_name, process_type, description } = CreateTraceConfigSchema.parse(args);
+          const result = await client.createTraceConfig(object_name, process_type, description);
+          return { content: [{ type: "text", text: result }] };
+        }
+
+        case "delete_trace_config": {
+          const { config_id } = TraceConfigIdSchema.parse(args);
+          const result = await client.deleteTraceConfig(config_id);
+          return { content: [{ type: "text", text: result }] };
+        }
+
+        // --- Service Binding ---
+        case "get_binding_details": {
+          const { binding_name } = z.object({ binding_name: z.string() }).parse(args);
+          const result = await client.getBindingDetails(binding_name);
+          return { content: [{ type: "text", text: result }] };
+        }
+
+        case "publish_service_binding": {
+          const { binding_name, binding_version } = ServiceBindingSchema.parse(args);
+          const result = await client.publishServiceBinding(binding_name, binding_version);
+          return { content: [{ type: "text", text: result }] };
+        }
+
+        case "unpublish_service_binding": {
+          const { binding_name, binding_version } = ServiceBindingSchema.parse(args);
+          const result = await client.unpublishServiceBinding(binding_name, binding_version);
+          return { content: [{ type: "text", text: result }] };
+        }
+
+        // --- Debugger ---
+        case "start_debugger_listener": {
+          const { terminal_id, ide_id, user } = DebuggerListenSchema.parse(args);
+          const result = await client.debuggerListen(terminal_id, ide_id, user);
+          return { content: [{ type: "text", text: result }] };
+        }
+
+        case "stop_debugger_listener": {
+          const { terminal_id, ide_id, user } = DebuggerListenSchema.parse(args);
+          const result = await client.debuggerDeleteListener(terminal_id, ide_id, user);
+          return { content: [{ type: "text", text: result }] };
+        }
+
+        case "set_debugger_breakpoint": {
+          const { uri, line, user } = DebuggerBreakpointSchema.parse(args);
+          const result = await client.debuggerSetBreakpoints(uri, line, user);
+          return { content: [{ type: "text", text: result }] };
+        }
+
+        case "delete_debugger_breakpoint": {
+          const { breakpoint_id } = DebuggerBreakpointIdSchema.parse(args);
+          const result = await client.debuggerDeleteBreakpoint(breakpoint_id);
+          return { content: [{ type: "text", text: result }] };
+        }
+
+        case "attach_debugger": {
+          const debugMode = (args as Record<string, unknown>)?.debug_mode as string | undefined;
+          const result = await client.debuggerAttach(debugMode);
+          return { content: [{ type: "text", text: result }] };
+        }
+
+        case "get_debugger_stack": {
+          const result = await client.debuggerGetStack();
+          return { content: [{ type: "text", text: result }] };
+        }
+
+        case "get_debugger_variables": {
+          const { variable_names } = DebuggerVariablesSchema.parse(args);
+          const result = await client.debuggerGetVariables(variable_names);
+          return { content: [{ type: "text", text: result }] };
+        }
+
+        case "get_debugger_child_variables": {
+          const { variable_name } = DebuggerChildVariablesSchema.parse(args);
+          const result = await client.debuggerGetChildVariables(variable_name);
+          return { content: [{ type: "text", text: result }] };
+        }
+
+        case "debugger_step": {
+          const { step_type, uri } = DebuggerStepSchema.parse(args);
+          const result = await client.debuggerStep(step_type, uri);
+          return { content: [{ type: "text", text: result }] };
+        }
+
+        case "debugger_goto_stack": {
+          const { stack_type, position } = DebuggerGotoStackSchema.parse(args);
+          const result = await client.debuggerGoToStack(stack_type, position);
+          return { content: [{ type: "text", text: result }] };
+        }
+
+        case "set_debugger_variable_value": {
+          const { variable_name, value } = DebuggerSetVariableSchema.parse(args);
+          const result = await client.debuggerSetVariableValue(variable_name, value);
+          return { content: [{ type: "text", text: result }] };
         }
 
         case "execute_program": {
