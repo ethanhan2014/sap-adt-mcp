@@ -4,6 +4,7 @@ export interface AdtConfig {
   username: string;
   password: string;
   client: string;
+  language: string;
 }
 
 export function buildBaseUrl(config: AdtConfig): string {

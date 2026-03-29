@@ -17,7 +17,9 @@ function loadConfig(): AdtConfig {
     process.exit(1);
   }
 
-  return { hostname, sysnr, username, password, client };
+  const language = process.env.SAP_LANGUAGE || "EN";
+
+  return { hostname, sysnr, username, password, client, language };
 }
 
 async function main() {

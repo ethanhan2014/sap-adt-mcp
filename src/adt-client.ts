@@ -10,7 +10,7 @@ export class AdtClient {
   constructor(private config: AdtConfig) {
     this.http = axios.create({
       baseURL: buildBaseUrl(config),
-      headers: { "sap-client": config.client },
+      headers: { "sap-client": config.client, "sap-language": config.language },
       auth: { username: config.username, password: config.password },
       httpsAgent: new https.Agent({ rejectUnauthorized: false }),
       timeout: 30000,

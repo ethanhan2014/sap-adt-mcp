@@ -108,6 +108,7 @@ npm run build
 | `SAP_USERNAME` | SAP user | `DEVELOPER` |
 | `SAP_PASSWORD` | SAP password | `secret` |
 | `SAP_CLIENT` | SAP client | `001` |
+| `SAP_LANGUAGE` | Logon language (default: `EN`) | `EN` |
 
 ## Usage with Claude Code
 
