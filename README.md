@@ -91,11 +91,36 @@ MCP server for SAP ABAP Development Tools (ADT) REST API. Enables AI assistants 
 |------|-------------|-------|
 | `get_csrf_token` | Fetch CSRF token and session cookie | _(none)_ |
 
-## Setup
+## Prerequisites
+
+- **Node.js** v18 or later
+- SAP user with **S_ADT_RES** authorization for ADT resource access
+- ICF services activated under `/sap/bc/adt/` (via transaction `SICF`)
+- Role **SAP_BC_DWB_ABAPDEVELOPER** or equivalent
+
+## Installation
 
 ```bash
+git clone https://github.com/ethanhan2014/sap-adt-mcp.git
+cd sap-adt-mcp
 npm install
-cp .env.example .env   # Edit with your SAP system details
+cp .env.example .env
+```
+
+Edit `.env` with your SAP system connection details:
+
+```
+SAP_HOSTNAME=your-sap-host.example.com
+SAP_SYSNR=50
+SAP_USERNAME=YOUR_USER
+SAP_PASSWORD=YOUR_PASSWORD
+SAP_CLIENT=001
+SAP_LANGUAGE=EN
+```
+
+Build the project:
+
+```bash
 npm run build
 ```
 
@@ -110,9 +135,11 @@ npm run build
 | `SAP_CLIENT` | SAP client | `001` |
 | `SAP_LANGUAGE` | Logon language (default: `EN`) | `EN` |
 
-## Usage with Claude Code
+## Usage
 
-Add to your Claude Code MCP configuration:
+### Claude Code
+
+Add to `~/.claude.json`:
 
 ```json
 {
@@ -125,12 +152,34 @@ Add to your Claude Code MCP configuration:
 }
 ```
 
-## Prerequisites
+### Cline (VS Code)
 
-Your SAP user needs:
-- **S_ADT_RES** authorization for ADT resource access
-- ICF services activated under `/sap/bc/adt/` (via transaction `SICF`)
-- Role **SAP_BC_DWB_ABAPDEVELOPER** or equivalent
+Add to Cline MCP settings (`cline_mcp_settings.json`):
+
+```json
+{
+  "mcpServers": {
+    "sap-adt": {
+      "command": "node",
+      "args": ["/path/to/sap-adt-mcp/dist/index.js"],
+      "disabled": false,
+      "autoApprove": []
+    }
+  }
+}
+```
+
+### Standalone
+
+```bash
+npm start
+```
+
+### Development (with MCP Inspector)
+
+```bash
+npx @modelcontextprotocol/inspector node dist/index.js
+```
 
 ## Tech Stack
 
