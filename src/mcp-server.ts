@@ -7,6 +7,7 @@ import { z } from "zod";
 import { AdtClient } from "./adt-client.js";
 import { parseDataElementXml } from "./dtel-parser.js";
 import { parseSqlResultXml } from "./sql-parser.js";
+import { parseSnapDumps, formatSt22Dumps } from "./snap-parser.js";
 import { AdtConfig } from "./types.js";
 
 const NameSchema = z.object({ name: z.string() });
@@ -30,6 +31,14 @@ const CreateCdsViewSchema = z.object({
   description: z.string(),
   source: z.string(),
   package: z.string().optional(),
+});
+const ChangeCdsViewSchema = z.object({
+  name: z.string(),
+  source: z.string(),
+});
+const ChangeAbapProgramSchema = z.object({
+  name: z.string(),
+  source: z.string(),
 });
 
 // Transport schemas
@@ -55,6 +64,39 @@ const CreateTraceConfigSchema = z.object({
   description: z.string().optional(),
 });
 const TraceConfigIdSchema = z.object({ config_id: z.string() });
+
+// ST05 trace schemas
+const EnableSt05Schema = z.object({
+  user: z.string().optional(),
+  sql: z.boolean().optional(),
+  buffer: z.boolean().optional(),
+  enqueue: z.boolean().optional(),
+  rfc: z.boolean().optional(),
+  http: z.boolean().optional(),
+  auth: z.boolean().optional(),
+  stack_trace: z.boolean().optional(),
+});
+
+// Cross trace schemas
+const EnableCrossTraceSchema = z.object({
+  user: z.string().optional(),
+  description: z.string().optional(),
+  max_traces: z.number().optional(),
+  expiry_hours: z.number().optional(),
+  components: z.array(z.string()).optional(),
+  trace_level: z.number().optional(),
+  request_type_filter: z.string().optional(),
+});
+const CrossTraceIdSchema = z.object({ activation_id: z.string() });
+const CrossTraceUserSchema = z.object({ user: z.string().optional() });
+const CrossTraceRecordsSchema = z.object({ trace_id: z.string() });
+
+// ST22 dump schema
+const FetchSt22Schema = z.object({
+  date: z.string().describe("Date in YYYYMMDD or YYYY-MM-DD format"),
+  user: z.string().optional().describe("Filter by SAP username"),
+  max_results: z.number().optional().describe("Max dumps to return (default: 100)"),
+});
 
 // Service binding schemas
 const ServiceBindingSchema = z.object({
@@ -180,6 +222,30 @@ export function createMcpServer(config: AdtConfig): Server {
             package: { type: "string", description: "Development package (default: $TMP)" },
           },
           required: ["name", "description", "source"],
+        },
+      },
+      {
+        name: "change_cds_view",
+        description: "Modify an existing CDS view (DDL source) in the SAP system. Locks the object, writes the new source, activates, and unlocks. Use get_cds_view first to read the current source.",
+        inputSchema: {
+          type: "object" as const,
+          properties: {
+            name: { type: "string", description: "CDS view name (e.g. ZHANZ_MY_VIEW)" },
+            source: { type: "string", description: "Complete new CDS DDL source code including all annotations and define view statement" },
+          },
+          required: ["name", "source"],
+        },
+      },
+      {
+        name: "change_abap_program",
+        description: "Modify an existing ABAP program/report in the SAP system. Locks the object, writes the new source, activates, and unlocks. Use get_abap_program first to read the current source.",
+        inputSchema: {
+          type: "object" as const,
+          properties: {
+            name: { type: "string", description: "Program name (e.g. ZHANZ_TEST)" },
+            source: { type: "string", description: "Complete new ABAP source code. Must start with REPORT statement." },
+          },
+          required: ["name", "source"],
         },
       },
       {
@@ -353,7 +419,7 @@ export function createMcpServer(config: AdtConfig): Server {
       // --- Trace Management ---
       {
         name: "list_traces",
-        description: "List ABAP runtime traces (SAT/SE30) for a user",
+        description: "List ABAP runtime traces (SAT/SE30) for a user. Traces must be created via SAP GUI (transaction SAT or SE30) since the ADT REST API cannot profile programrun executions.",
         inputSchema: {
           type: "object" as const,
           properties: {
@@ -596,6 +662,101 @@ export function createMcpServer(config: AdtConfig): Server {
         },
       },
       {
+        name: "enable_st05_trace",
+        description: "Enable ST05 performance trace (SQL trace, buffer trace, etc.) for a specific user. By default enables SQL trace with stack trace. The trace runs continuously until disabled with disable_st05_trace.",
+        inputSchema: {
+          type: "object" as const,
+          properties: {
+            user: { type: "string", description: "SAP username to trace (default: current user)" },
+            sql: { type: "boolean", description: "Enable SQL trace (default: true)" },
+            buffer: { type: "boolean", description: "Enable buffer trace (default: false)" },
+            enqueue: { type: "boolean", description: "Enable enqueue trace (default: false)" },
+            rfc: { type: "boolean", description: "Enable RFC trace (default: false)" },
+            http: { type: "boolean", description: "Enable HTTP trace (default: false)" },
+            auth: { type: "boolean", description: "Enable authorization trace (default: false)" },
+            stack_trace: { type: "boolean", description: "Include ABAP stack traces (default: true)" },
+          },
+          required: [],
+        },
+      },
+      {
+        name: "disable_st05_trace",
+        description: "Disable ST05 performance trace. Stops all active trace collection on the server.",
+        inputSchema: {
+          type: "object" as const,
+          properties: {},
+          required: [],
+        },
+      },
+      {
+        name: "get_st05_trace_state",
+        description: "Get the current ST05 performance trace state — shows which trace types are active, the user filter, and server info.",
+        inputSchema: {
+          type: "object" as const,
+          properties: {},
+          required: [],
+        },
+      },
+      {
+        name: "enable_cross_trace",
+        description: "Enable ABAP Cross Trace for a user. Traces RAP, OData, SADL, BAdI, Gateway and other framework components continuously (up to max_traces). Unlike SAT trace which captures only 1 execution, cross trace captures multiple requests over time.",
+        inputSchema: {
+          type: "object" as const,
+          properties: {
+            user: { type: "string", description: "SAP username to trace (default: current user)" },
+            description: { type: "string", description: "Trace description (default: 'Cross trace <USER>')" },
+            max_traces: { type: "number", description: "Maximum number of traces to capture (default: 100)" },
+            expiry_hours: { type: "number", description: "Hours until trace auto-deletes (default: 24)" },
+            components: { type: "array", items: { type: "string" }, description: "Component names to trace (default: all available components). Use list_cross_trace_components to see available names." },
+            trace_level: { type: "number", description: "Trace detail level 1-3 (default: 2)" },
+            request_type_filter: { type: "string", description: "Filter by request type: T=Transaction, C=RFC, U=URL, O=OData V2, 4=OData V4, B=Batch, etc. (default: all)" },
+          },
+          required: [],
+        },
+      },
+      {
+        name: "disable_cross_trace",
+        description: "Disable an ABAP Cross Trace activation by its ID. Use get_cross_trace_activations to find the activation ID.",
+        inputSchema: {
+          type: "object" as const,
+          properties: {
+            activation_id: { type: "string", description: "Activation ID to delete" },
+          },
+          required: ["activation_id"],
+        },
+      },
+      {
+        name: "get_cross_trace_activations",
+        description: "List all active ABAP Cross Trace activations. Shows activation IDs, user filters, enabled state, expiry, and component count.",
+        inputSchema: {
+          type: "object" as const,
+          properties: {},
+          required: [],
+        },
+      },
+      {
+        name: "list_cross_traces",
+        description: "List captured ABAP Cross Trace results for a user. Shows trace IDs, request types (OData V2/V4, URL, RFC, etc.), and service names.",
+        inputSchema: {
+          type: "object" as const,
+          properties: {
+            user: { type: "string", description: "SAP username (default: current user)" },
+          },
+          required: [],
+        },
+      },
+      {
+        name: "get_cross_trace_records",
+        description: "Get detailed records for a specific cross trace. Shows framework-level trace records with components, timestamps, and content.",
+        inputSchema: {
+          type: "object" as const,
+          properties: {
+            trace_id: { type: "string", description: "Trace ID from list_cross_traces" },
+          },
+          required: ["trace_id"],
+        },
+      },
+      {
         name: "get_csrf_token",
         description: "Fetch a CSRF token and session cookie from the SAP system. Useful for making authenticated POST/PUT/DELETE requests to ADT or other SAP ICF services.",
         inputSchema: {
@@ -611,6 +772,22 @@ export function createMcpServer(config: AdtConfig): Server {
           type: "object" as const,
           properties: { query: { type: "string", description: "ABAP SQL query" } },
           required: ["query"],
+        },
+      },
+      {
+        name: "fetch_st22_dumps",
+        description:
+          "Fetch ABAP runtime error dumps (ST22/short dumps) for a specific date. " +
+          "Returns dump time, user, runtime error type, and program. " +
+          "Queries the SNAP table and parses the encoded dump headers.",
+        inputSchema: {
+          type: "object" as const,
+          properties: {
+            date: { type: "string", description: "Date in YYYYMMDD or YYYY-MM-DD format (e.g. 20260402)" },
+            user: { type: "string", description: "Filter by SAP username (e.g. WF-BATCH)" },
+            max_results: { type: "number", description: "Max dumps to return (default: 100)", default: 100 },
+          },
+          required: ["date"],
         },
       },
     ],
@@ -915,10 +1092,197 @@ export function createMcpServer(config: AdtConfig): Server {
           return { content: [{ type: "text", text: log }] };
         }
 
+        case "change_cds_view": {
+          const { name: cdsName, source } = ChangeCdsViewSchema.parse(args);
+          const log = await client.changeCdsView(cdsName, source);
+          return { content: [{ type: "text", text: log }] };
+        }
+
+        case "change_abap_program": {
+          const { name: progName, source } = ChangeAbapProgramSchema.parse(args);
+          const log = await client.changeAbapProgram(progName, source);
+          return { content: [{ type: "text", text: log }] };
+        }
+
         case "create_abap_program": {
           const { name: progName, description, source, package: pkg } = CreateProgramSchema.parse(args);
           const log = await client.createAbapProgram(progName, description, source, pkg ?? "$TMP");
           return { content: [{ type: "text", text: log }] };
+        }
+
+        case "enable_st05_trace": {
+          const opts = EnableSt05Schema.parse(args);
+          const result = await client.enableSt05Trace({
+            user: opts.user,
+            sql: opts.sql,
+            buffer: opts.buffer,
+            enqueue: opts.enqueue,
+            rfc: opts.rfc,
+            http: opts.http,
+            auth: opts.auth,
+            stackTrace: opts.stack_trace,
+          });
+          const sqlOn = result.match(/<ts:sqlOn>(\w+)<\/ts:sqlOn>/)?.[1];
+          const bufOn = result.match(/<ts:bufOn>(\w+)<\/ts:bufOn>/)?.[1];
+          const enqOn = result.match(/<ts:enqOn>(\w+)<\/ts:enqOn>/)?.[1];
+          const rfcOn = result.match(/<ts:rfcOn>(\w+)<\/ts:rfcOn>/)?.[1];
+          const httpOn = result.match(/<ts:httpOn>(\w+)<\/ts:httpOn>/)?.[1];
+          const authOn = result.match(/<ts:authOn>(\w+)<\/ts:authOn>/)?.[1];
+          const stackOn = result.match(/<ts:stackTraceOn>(\w+)<\/ts:stackTraceOn>/)?.[1];
+          const traceUser = result.match(/<ts:traceUser>([^<]*)<\/ts:traceUser>/)?.[1] || "(all)";
+          const lines = [
+            "ST05 trace enabled:",
+            `  User:        ${traceUser}`,
+            `  SQL:         ${sqlOn}`,
+            `  Buffer:      ${bufOn}`,
+            `  Enqueue:     ${enqOn}`,
+            `  RFC:         ${rfcOn}`,
+            `  HTTP:        ${httpOn}`,
+            `  Auth:        ${authOn}`,
+            `  Stack trace: ${stackOn}`,
+          ];
+          return { content: [{ type: "text", text: lines.join("\n") }] };
+        }
+
+        case "disable_st05_trace": {
+          await client.disableSt05Trace();
+          return { content: [{ type: "text", text: "ST05 trace disabled." }] };
+        }
+
+        case "get_st05_trace_state": {
+          const state = await client.getSt05TraceState();
+          const sqlOn = state.match(/<ts:sqlOn>(\w+)<\/ts:sqlOn>/)?.[1];
+          const bufOn = state.match(/<ts:bufOn>(\w+)<\/ts:bufOn>/)?.[1];
+          const enqOn = state.match(/<ts:enqOn>(\w+)<\/ts:enqOn>/)?.[1];
+          const rfcOn = state.match(/<ts:rfcOn>(\w+)<\/ts:rfcOn>/)?.[1];
+          const httpOn = state.match(/<ts:httpOn>(\w+)<\/ts:httpOn>/)?.[1];
+          const authOn = state.match(/<ts:authOn>(\w+)<\/ts:authOn>/)?.[1];
+          const stackOn = state.match(/<ts:stackTraceOn>(\w+)<\/ts:stackTraceOn>/)?.[1];
+          const traceUser = state.match(/<ts:traceUser>([^<]*)<\/ts:traceUser>/)?.[1] || "(none)";
+          const selected = state.match(/<ts:isSelected>(\w+)<\/ts:isSelected>/)?.[1];
+          const instance = state.match(/<ts:instance>([^<]+)<\/ts:instance>/)?.[1];
+          const modUser = state.match(/<ts:modificationUser>([^<]*)<\/ts:modificationUser>/)?.[1];
+          const modTime = state.match(/<ts:modificationDateTime>([^<]*)<\/ts:modificationDateTime>/)?.[1];
+          const active = selected === "true" && (sqlOn === "true" || bufOn === "true" || enqOn === "true" || rfcOn === "true" || httpOn === "true" || authOn === "true");
+          const lines = [
+            `ST05 trace state: ${active ? "ACTIVE" : "INACTIVE"}`,
+            `  Server:      ${instance}`,
+            `  User filter: ${traceUser}`,
+            `  SQL:         ${sqlOn}`,
+            `  Buffer:      ${bufOn}`,
+            `  Enqueue:     ${enqOn}`,
+            `  RFC:         ${rfcOn}`,
+            `  HTTP:        ${httpOn}`,
+            `  Auth:        ${authOn}`,
+            `  Stack trace: ${stackOn}`,
+            `  Modified by: ${modUser} at ${modTime}`,
+          ];
+          return { content: [{ type: "text", text: lines.join("\n") }] };
+        }
+
+        case "enable_cross_trace": {
+          const opts = EnableCrossTraceSchema.parse(args);
+          const result = await client.enableCrossTrace({
+            user: opts.user,
+            description: opts.description,
+            maxTraces: opts.max_traces,
+            expiryHours: opts.expiry_hours,
+            components: opts.components,
+            traceLevel: opts.trace_level,
+            requestTypeFilter: opts.request_type_filter,
+          });
+          const aid = result.match(/<sxt:activationId>([^<]+)<\/sxt:activationId>/)?.[1] ?? "?";
+          const user = result.match(/<sxt:userFilter>([^<]*)<\/sxt:userFilter>/)?.[1] ?? "(all)";
+          const enabled = result.match(/<sxt:enabled>([^<]+)<\/sxt:enabled>/)?.[1];
+          const maxTr = result.match(/<sxt:maxNumberOfTraces>([^<]+)<\/sxt:maxNumberOfTraces>/)?.[1];
+          const delTime = result.match(/<sxt:deletionTime>([^<]+)<\/sxt:deletionTime>/)?.[1];
+          const comps = [...result.matchAll(/<sxt:component><sxt:component>([^<]+)<\/sxt:component>/g)];
+          const lines = [
+            "Cross Trace activated:",
+            `  Activation ID: ${aid}`,
+            `  User:          ${user}`,
+            `  Enabled:       ${enabled}`,
+            `  Max traces:    ${maxTr}`,
+            `  Expires:       ${delTime}`,
+            `  Components:    ${comps.length}`,
+          ];
+          return { content: [{ type: "text", text: lines.join("\n") }] };
+        }
+
+        case "disable_cross_trace": {
+          const { activation_id } = CrossTraceIdSchema.parse(args);
+          const result = await client.disableCrossTrace(activation_id);
+          return { content: [{ type: "text", text: result }] };
+        }
+
+        case "get_cross_trace_activations": {
+          const result = await client.getCrossTraceActivations();
+          const activations = [...result.matchAll(/<sxt:activation>([\s\S]*?)<\/sxt:activation>/g)];
+          if (activations.length === 0) {
+            return { content: [{ type: "text", text: "No active cross trace activations." }] };
+          }
+          const lines = [`${activations.length} activation(s):\n`];
+          for (const [, a] of activations) {
+            const aid = a.match(/<sxt:activationId>([^<]+)<\/sxt:activationId>/)?.[1] ?? "?";
+            const user = a.match(/<sxt:userFilter>([^<]*)<\/sxt:userFilter>/)?.[1] || "(all)";
+            const enabled = a.match(/<sxt:enabled>([^<]+)<\/sxt:enabled>/)?.[1];
+            const maxTr = a.match(/<sxt:maxNumberOfTraces>([^<]+)<\/sxt:maxNumberOfTraces>/)?.[1];
+            const numTr = a.match(/<sxt:numberOfTraces>([^<]+)<\/sxt:numberOfTraces>/)?.[1];
+            const delTime = a.match(/<sxt:deletionTime>([^<]+)<\/sxt:deletionTime>/)?.[1];
+            const desc = a.match(/<sxt:description>([^<]*)<\/sxt:description>/)?.[1];
+            const comps = [...a.matchAll(/<sxt:component><sxt:component>([^<]+)<\/sxt:component>/g)];
+            lines.push(`  ID:          ${aid}`);
+            lines.push(`  Description: ${desc}`);
+            lines.push(`  User:        ${user}`);
+            lines.push(`  Enabled:     ${enabled}`);
+            lines.push(`  Traces:      ${numTr}/${maxTr}`);
+            lines.push(`  Expires:     ${delTime}`);
+            lines.push(`  Components:  ${comps.length}`);
+            lines.push("");
+          }
+          return { content: [{ type: "text", text: lines.join("\n") }] };
+        }
+
+        case "list_cross_traces": {
+          const { user } = CrossTraceUserSchema.parse(args);
+          const result = await client.listCrossTraces(user);
+          const traces = [...result.matchAll(/<sxt:trace>([\s\S]*?)<\/sxt:trace>/g)];
+          if (traces.length === 0) {
+            return { content: [{ type: "text", text: "No cross traces found." }] };
+          }
+          const typeMap: Record<string, string> = {
+            T: "Transaction", C: "RFC", U: "URL", S: "Submit", B: "Batch",
+            V: "Update", O: "OData V2", "4": "OData V4", D: "Daemon", Q: "SQL Service",
+          };
+          const counts: Record<string, number> = {};
+          const traceLines: string[] = [];
+          for (const [, t] of traces) {
+            const tid = t.match(/<sxt:traceId>([^<]+)<\/sxt:traceId>/)?.[1] ?? "?";
+            const rtype = t.match(/<sxt:requestType>([^<]*)<\/sxt:requestType>/)?.[1] ?? "?";
+            const rname = t.match(/<sxt:requestName>([^<]*)<\/sxt:requestName>/)?.[1] ?? "?";
+            const nrecs = t.match(/<sxt:numberOfRecords>([^<]+)<\/sxt:numberOfRecords>/)?.[1] ?? "0";
+            const typeName = typeMap[rtype] ?? rtype;
+            counts[rname] = (counts[rname] || 0) + 1;
+            traceLines.push(`  ${tid}  ${typeName.padEnd(10)}  ${rname}  (${nrecs} records)`);
+          }
+          const summary = Object.entries(counts)
+            .sort((a, b) => b[1] - a[1])
+            .slice(0, 10)
+            .map(([name, count]) => `  ${name}: ${count}`)
+            .join("\n");
+          const lines = [
+            `${traces.length} cross trace(s):\n`,
+            `Top services:\n${summary}\n`,
+            `All traces:`,
+            ...traceLines,
+          ];
+          return { content: [{ type: "text", text: lines.join("\n") }] };
+        }
+
+        case "get_cross_trace_records": {
+          const { trace_id } = CrossTraceRecordsSchema.parse(args);
+          const result = await client.getCrossTraceRecords(trace_id);
+          return { content: [{ type: "text", text: result }] };
         }
 
         case "get_csrf_token": {
@@ -932,6 +1296,24 @@ export function createMcpServer(config: AdtConfig): Server {
           const xml = await client.executeFreestyleSql(query);
           const table = parseSqlResultXml(xml);
           return { content: [{ type: "text", text: table }] };
+        }
+
+        case "fetch_st22_dumps": {
+          const parsed = FetchSt22Schema.parse(args);
+          const dateStr = parsed.date.replace(/-/g, "");
+          const maxRows = parsed.max_results ?? 100;
+
+          let query = `SELECT datum, uzeit, uname, ahost, flist FROM snap WHERE datum = '${dateStr}' AND seqno = '000'`;
+          if (parsed.user) {
+            query += ` AND uname = '${parsed.user.toUpperCase()}'`;
+          }
+          query += ` ORDER BY uzeit DESCENDING UP TO ${maxRows} ROWS`;
+
+          const xml = await client.executeFreestyleSql(query);
+          const dumps = parseSnapDumps(xml);
+          const displayDate = `${dateStr.substring(0, 4)}-${dateStr.substring(4, 6)}-${dateStr.substring(6, 8)}`;
+          const text = formatSt22Dumps(dumps, displayDate);
+          return { content: [{ type: "text", text }] };
         }
 
         default:

@@ -309,6 +309,107 @@ export class AdtClient {
     )).data as string;
   }
 
+  // --- Cross Trace ---
+
+  async getCrossTraceComponents(): Promise<string[]> {
+    const response = await this.http.get<string>(
+      "/sap/bc/adt/crosstrace/components",
+      { headers: { Accept: "*/*" }, responseType: "text" }
+    );
+    const names = [...response.data.matchAll(/<nameditem:name>([^<]+)<\/nameditem:name>/g)].map(m => m[1]);
+    return [...new Set(names)];
+  }
+
+  async getCrossTraceActivations(): Promise<string> {
+    const response = await this.http.get<string>(
+      "/sap/bc/adt/crosstrace/activations",
+      { headers: { Accept: "application/vnd.sap.adt.crosstrace.activations.v1+xml" }, responseType: "text" }
+    );
+    return response.data;
+  }
+
+  async enableCrossTrace(options: {
+    user?: string;
+    description?: string;
+    maxTraces?: number;
+    expiryHours?: number;
+    components?: string[];
+    traceLevel?: number;
+    requestTypeFilter?: string;
+  }): Promise<string> {
+    const traceUser = (options.user ?? this.config.username).toUpperCase();
+    const desc = options.description ?? `Cross trace ${traceUser}`;
+    const maxTraces = options.maxTraces ?? 100;
+    const expiryHours = options.expiryHours ?? 24;
+    const traceLevel = options.traceLevel ?? 2;
+
+    const expiry = new Date(Date.now() + expiryHours * 3600000);
+    const deletionTime = expiry.toISOString().replace(/\.\d+Z$/, ".0000000Z");
+
+    let componentNames = options.components;
+    if (!componentNames || componentNames.length === 0) {
+      componentNames = await this.getCrossTraceComponents();
+    }
+
+    const componentsXml = componentNames
+      .map(c => `    <sxt:component><sxt:component>${this.escapeXml(c)}</sxt:component><sxt:traceLevel>${traceLevel}</sxt:traceLevel></sxt:component>`)
+      .join("\n");
+
+    const requestTypeFilter = options.requestTypeFilter ?? "";
+
+    const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<sxt:activation xmlns:sxt="http://www.sap.com/adt/crosstrace/traces">
+  <sxt:deletionTime>${deletionTime}</sxt:deletionTime>
+  <sxt:description>${this.escapeXml(desc)}</sxt:description>
+  <sxt:enabled>true</sxt:enabled>
+  <sxt:userFilter>${this.escapeXml(traceUser)}</sxt:userFilter>
+  <sxt:requestTypeFilter>${this.escapeXml(requestTypeFilter)}</sxt:requestTypeFilter>
+  <sxt:components>
+${componentsXml}
+  </sxt:components>
+  <sxt:maxNumberOfTraces>${maxTraces}</sxt:maxNumberOfTraces>
+</sxt:activation>`;
+
+    return (await this.postWithCsrf(
+      "/sap/bc/adt/crosstrace/activations",
+      xml,
+      "application/vnd.sap.adt.crosstrace.activations.v1+xml",
+      "application/vnd.sap.adt.crosstrace.activations.v1+xml"
+    )).data as string;
+  }
+
+  async disableCrossTrace(activationId: string): Promise<string> {
+    const resp = await this.deleteWithCsrf(
+      `/sap/bc/adt/crosstrace/activations/${encodeURIComponent(activationId)}`
+    );
+    return resp.data as string || "Cross trace activation deleted";
+  }
+
+  async listCrossTraces(user?: string): Promise<string> {
+    const traceUser = (user ?? this.config.username).toUpperCase();
+    const response = await this.http.get<string>(
+      `/sap/bc/adt/crosstrace/traces?traceUser=${encodeURIComponent(traceUser)}`,
+      { headers: { Accept: "application/vnd.sap.adt.crosstrace.traces.v1+xml" }, responseType: "text" }
+    );
+    return response.data;
+  }
+
+  async getCrossTraceDetail(traceId: string): Promise<string> {
+    const response = await this.http.get<string>(
+      `/sap/bc/adt/crosstrace/traces/${encodeURIComponent(traceId)}`,
+      { headers: { Accept: "application/vnd.sap.adt.crosstrace.traces.v1+xml" }, responseType: "text" }
+    );
+    return response.data;
+  }
+
+  async getCrossTraceRecords(traceId: string): Promise<string> {
+    const response = await this.http.get<string>(
+      `/sap/bc/adt/crosstrace/traces/${encodeURIComponent(traceId)}/records`,
+      { headers: { Accept: "*/*" }, responseType: "text" }
+    );
+    return response.data;
+  }
+
   // --- Debugger ---
 
   private debugSessionActive = false;
@@ -580,32 +681,113 @@ export class AdtClient {
     return log.join("\n");
   }
 
-  async createCdsView(name: string, description: string, source: string, pkg = "$TMP"): Promise<string> {
+  async changeAbapProgram(name: string, source: string, transport?: string): Promise<string> {
     await this.fetchStatefulCsrf();
     const log: string[] = [];
     const nameLower = name.toLowerCase();
     const nameUpper = name.toUpperCase();
 
     try {
-      // 1. Create DDL source shell
-      const xml = `<?xml version="1.0" encoding="UTF-8"?>
-<ddl:ddlSource xmlns:ddl="http://www.sap.com/adt/ddic/ddlsources"
-  xmlns:adtcore="http://www.sap.com/adt/core"
-  adtcore:type="DDLS/DF" adtcore:description="${this.escapeXml(description)}"
-  adtcore:language="EN" adtcore:name="${nameUpper}"
-  adtcore:masterLanguage="EN" adtcore:responsible="${this.config.username.toUpperCase()}">
-  <adtcore:packageRef adtcore:name="${pkg}"/>
-</ddl:ddlSource>`;
+      // 1. Lock
+      const lockResp = await this.http.post(
+        `/sap/bc/adt/programs/programs/${nameLower}?_action=LOCK&accessMode=MODIFY`,
+        "",
+        { headers: this.statefulHeaders(), responseType: "text", validateStatus: () => true }
+      );
+      const lockData = lockResp.data as string;
+      const lockMatch = lockData.match(/<LOCK_HANDLE>([^<]+)<\/LOCK_HANDLE>/);
 
-      await this.http.post("/sap/bc/adt/ddic/ddl/sources", xml, {
-        headers: this.statefulHeaders({
-          "Content-Type": "application/vnd.sap.adt.ddlSource+xml; charset=utf-8",
-          Accept: "application/vnd.sap.adt.ddlSource+xml",
-        }),
-      });
-      log.push(`Created DDL source ${nameUpper} in package ${pkg}`);
+      if (!lockMatch?.[1]) {
+        log.push(`Failed to lock program ${nameUpper} (HTTP ${lockResp.status})`);
+        log.push(lockData.substring(0, 500));
+        return log.join("\n");
+      }
 
-      // 2. Lock
+      const lockHandle = lockMatch[1];
+      log.push(`Locked ${nameUpper} for editing`);
+
+      // 2. Write source (auto-detect transport if not provided)
+      let corrNr = transport ?? "";
+      let writeResp = await this.http.put(
+        `/sap/bc/adt/programs/programs/${nameLower}/source/main?lockHandle=${encodeURIComponent(lockHandle)}&corrNr=${corrNr}`,
+        source,
+        {
+          headers: this.statefulHeaders({ "Content-Type": "text/plain; charset=utf-8" }),
+          responseType: "text",
+          validateStatus: () => true,
+        }
+      );
+      if (writeResp.status >= 400 && !transport) {
+        const trMatch = (writeResp.data as string).match(/request\s+([A-Z]{3}K\d{6})/);
+        if (trMatch) {
+          corrNr = trMatch[1];
+          log.push(`Auto-detected transport ${corrNr}`);
+          writeResp = await this.http.put(
+            `/sap/bc/adt/programs/programs/${nameLower}/source/main?lockHandle=${encodeURIComponent(lockHandle)}&corrNr=${corrNr}`,
+            source,
+            {
+              headers: this.statefulHeaders({ "Content-Type": "text/plain; charset=utf-8" }),
+              responseType: "text",
+              validateStatus: () => true,
+            }
+          );
+        }
+      }
+      if (writeResp.status >= 400) {
+        log.push(`Write failed (HTTP ${writeResp.status}): ${(writeResp.data as string).substring(0, 500)}`);
+      } else {
+        log.push("Source code written");
+      }
+
+      // 3. Unlock (must unlock before activation)
+      await this.http.post(
+        `/sap/bc/adt/programs/programs/${nameLower}?_action=UNLOCK&lockHandle=${encodeURIComponent(lockHandle)}`,
+        "",
+        { headers: this.statefulHeaders(), responseType: "text", validateStatus: () => true }
+      );
+      log.push("Unlocked");
+
+      // 4. Activate
+      const activateBody = `<?xml version="1.0" encoding="UTF-8"?>
+<adtcore:objectReferences xmlns:adtcore="http://www.sap.com/adt/core">
+  <adtcore:objectReference adtcore:uri="/sap/bc/adt/programs/programs/${nameLower}" adtcore:name="${nameUpper}"/>
+</adtcore:objectReferences>`;
+
+      const actResp = await this.http.post(
+        "/sap/bc/adt/activation?method=activate&preauditRequested=true",
+        activateBody,
+        {
+          headers: this.statefulHeaders({
+            "Content-Type": "application/xml",
+            Accept: "application/xml",
+          }),
+          responseType: "text",
+          validateStatus: () => true,
+        }
+      );
+
+      const actData = actResp.data as string;
+      if (actData.includes('activationExecuted="true"')) {
+        log.push("Activated successfully");
+      } else {
+        const msgMatch = actData.match(/<msg:shortText>([\s\S]*?)<\/msg:shortText>/);
+        log.push(`Activation: ${msgMatch?.[1] ?? `HTTP ${actResp.status}`}`);
+      }
+    } finally {
+      await this.endStatefulSession();
+    }
+
+    return log.join("\n");
+  }
+
+  async changeCdsView(name: string, source: string): Promise<string> {
+    await this.fetchStatefulCsrf();
+    const log: string[] = [];
+    const nameLower = name.toLowerCase();
+    const nameUpper = name.toUpperCase();
+
+    try {
+      // 1. Lock
       const lockResp = await this.http.post(
         `/sap/bc/adt/ddic/ddl/sources/${nameLower}?_action=LOCK&accessMode=MODIFY`,
         "",
@@ -615,15 +797,15 @@ export class AdtClient {
       const lockMatch = lockData.match(/<LOCK_HANDLE>([^<]+)<\/LOCK_HANDLE>/);
 
       if (!lockMatch?.[1]) {
-        log.push(`Note: Could not lock DDL source (HTTP ${lockResp.status}). Source must be added via Eclipse ADT.`);
-        log.push(`Open /sap/bc/adt/ddic/ddl/sources/${nameLower} in ADT to add source code.`);
+        log.push(`Failed to lock DDL source ${nameUpper} (HTTP ${lockResp.status})`);
+        log.push(lockData.substring(0, 500));
         return log.join("\n");
       }
 
       const lockHandle = lockMatch[1];
-      log.push("Locked for editing");
+      log.push(`Locked ${nameUpper} for editing`);
 
-      // 3. Write source
+      // 2. Write source
       await this.http.put(
         `/sap/bc/adt/ddic/ddl/sources/${nameLower}/source/main?lockHandle=${encodeURIComponent(lockHandle)}`,
         source,
@@ -634,15 +816,7 @@ export class AdtClient {
       );
       log.push("Source code written");
 
-      // 4. Unlock
-      await this.http.post(
-        `/sap/bc/adt/ddic/ddl/sources/${nameLower}?_action=UNLOCK&lockHandle=${encodeURIComponent(lockHandle)}`,
-        "",
-        { headers: this.statefulHeaders(), responseType: "text" }
-      );
-      log.push("Unlocked");
-
-      // 5. Activate
+      // 3. Activate
       const activateBody = `<?xml version="1.0" encoding="UTF-8"?>
 <adtcore:objectReferences xmlns:adtcore="http://www.sap.com/adt/core">
   <adtcore:objectReference adtcore:uri="/sap/bc/adt/ddic/ddl/sources/${nameLower}" adtcore:name="${nameUpper}"/>
@@ -668,6 +842,116 @@ export class AdtClient {
         const msgMatch = actData.match(/<msg:shortText>([\s\S]*?)<\/msg:shortText>/);
         log.push(`Activation: ${msgMatch?.[1] ?? `HTTP ${actResp.status}`}`);
       }
+
+      // 4. Unlock
+      await this.http.post(
+        `/sap/bc/adt/ddic/ddl/sources/${nameLower}?_action=UNLOCK&lockHandle=${encodeURIComponent(lockHandle)}`,
+        "",
+        { headers: this.statefulHeaders(), responseType: "text" }
+      );
+      log.push("Unlocked");
+    } finally {
+      await this.endStatefulSession();
+    }
+
+    return log.join("\n");
+  }
+
+  async createCdsView(name: string, description: string, source: string, pkg = "$TMP"): Promise<string> {
+    await this.fetchStatefulCsrf();
+    const log: string[] = [];
+    const nameLower = name.toLowerCase();
+    const nameUpper = name.toUpperCase();
+
+    try {
+      // 1. Create DDL source shell
+      const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<ddl:ddlSource xmlns:ddl="http://www.sap.com/adt/ddic/ddlsources"
+  xmlns:adtcore="http://www.sap.com/adt/core"
+  adtcore:type="DDLS/DF" adtcore:description="${this.escapeXml(description)}"
+  adtcore:language="EN" adtcore:name="${nameUpper}"
+  adtcore:masterLanguage="EN" adtcore:responsible="${this.config.username.toUpperCase()}">
+  <adtcore:packageRef adtcore:name="${pkg}"/>
+</ddl:ddlSource>`;
+
+      const createResp = await this.http.post("/sap/bc/adt/ddic/ddl/sources", xml, {
+        headers: this.statefulHeaders({
+          "Content-Type": "application/vnd.sap.adt.ddlSource+xml; charset=utf-8",
+          Accept: "application/vnd.sap.adt.ddlSource+xml",
+        }),
+        validateStatus: () => true,
+      });
+
+      if (createResp.status >= 400) {
+        const errData = createResp.data as string;
+        const msgMatch = errData.match(/<msg:shortText>([\s\S]*?)<\/msg:shortText>/);
+        log.push(`Failed to create DDL source ${nameUpper} (HTTP ${createResp.status}): ${msgMatch?.[1] ?? errData.substring(0, 500)}`);
+        return log.join("\n");
+      }
+      log.push(`Created DDL source ${nameUpper} in package ${pkg}`);
+
+      // 2. Lock
+      const lockResp = await this.http.post(
+        `/sap/bc/adt/ddic/ddl/sources/${nameLower}?_action=LOCK&accessMode=MODIFY`,
+        "",
+        { headers: this.statefulHeaders(), responseType: "text", validateStatus: () => true }
+      );
+      const lockData = lockResp.data as string;
+      const lockMatch = lockData.match(/<LOCK_HANDLE>([^<]+)<\/LOCK_HANDLE>/);
+
+      if (!lockMatch?.[1]) {
+        log.push(`Failed to lock DDL source (HTTP ${lockResp.status}): ${lockData.substring(0, 500)}`);
+        return log.join("\n");
+      }
+
+      const lockHandle = lockMatch[1];
+      log.push("Locked for editing");
+
+      // 3. Write source
+      await this.http.put(
+        `/sap/bc/adt/ddic/ddl/sources/${nameLower}/source/main?lockHandle=${encodeURIComponent(lockHandle)}`,
+        source,
+        {
+          headers: this.statefulHeaders({ "Content-Type": "text/plain; charset=utf-8" }),
+          responseType: "text",
+        }
+      );
+      log.push("Source code written");
+
+      // 4. Activate (must happen while still locked)
+      const activateBody = `<?xml version="1.0" encoding="UTF-8"?>
+<adtcore:objectReferences xmlns:adtcore="http://www.sap.com/adt/core">
+  <adtcore:objectReference adtcore:uri="/sap/bc/adt/ddic/ddl/sources/${nameLower}" adtcore:name="${nameUpper}"/>
+</adtcore:objectReferences>`;
+
+      const actResp = await this.http.post(
+        "/sap/bc/adt/activation?method=activate&preauditRequested=true",
+        activateBody,
+        {
+          headers: this.statefulHeaders({
+            "Content-Type": "application/xml",
+            Accept: "application/xml",
+          }),
+          responseType: "text",
+          validateStatus: () => true,
+        }
+      );
+
+      const actData = actResp.data as string;
+      if (actData.includes('activationExecuted="true"')) {
+        log.push("Activated successfully");
+      } else {
+        const msgMatch = actData.match(/<msg:shortText>([\s\S]*?)<\/msg:shortText>/);
+        log.push(`Activation: ${msgMatch?.[1] ?? `HTTP ${actResp.status}`}`);
+      }
+
+      // 5. Unlock (after activation)
+      await this.http.post(
+        `/sap/bc/adt/ddic/ddl/sources/${nameLower}?_action=UNLOCK&lockHandle=${encodeURIComponent(lockHandle)}`,
+        "",
+        { headers: this.statefulHeaders(), responseType: "text" }
+      );
+      log.push("Unlocked");
     } finally {
       await this.endStatefulSession();
     }
@@ -700,6 +984,132 @@ export class AdtClient {
     } catch {
       // Best-effort session cleanup
     }
+  }
+
+  // --- ST05 Performance Trace ---
+
+  async getSt05TraceState(): Promise<string> {
+    const response = await this.http.get<string>(
+      "/sap/bc/adt/st05/trace/state",
+      { headers: { Accept: "*/*" }, responseType: "text" }
+    );
+    return response.data;
+  }
+
+  async enableSt05Trace(options: {
+    user?: string;
+    sql?: boolean;
+    buffer?: boolean;
+    enqueue?: boolean;
+    rfc?: boolean;
+    http?: boolean;
+    auth?: boolean;
+    stackTrace?: boolean;
+  }): Promise<string> {
+    const state = await this.getSt05TraceState();
+
+    const instanceMatch = state.match(/<ts:instance>([^<]+)<\/ts:instance>/);
+    const hostMatch = state.match(/<ts:host>([^<]+)<\/ts:host>/);
+    const instance = instanceMatch?.[1] ?? "";
+    const host = hostMatch?.[1] ?? "";
+    const traceUser = (options.user ?? this.config.username).toUpperCase();
+
+    const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<ts:traceStateInstanceTable xmlns:ts="http://www.sap.com/adt/tools/performance/tracestate">
+  <ts:traceStateInstance>
+    <ts:instance>${this.escapeXml(instance)}</ts:instance>
+    <ts:host>${this.escapeXml(host)}</ts:host>
+    <ts:isLocal>true</ts:isLocal>
+    <ts:isSelected>true</ts:isSelected>
+    <ts:modificationUser>${this.escapeXml(this.config.username.toUpperCase())}</ts:modificationUser>
+    <ts:modificationDateTime>${new Date().toISOString().replace(/\.\d+Z$/, "Z")}</ts:modificationDateTime>
+    <ts:traceTypes>
+      <ts:sqlOn>${options.sql !== false}</ts:sqlOn>
+      <ts:bufOn>${options.buffer ?? false}</ts:bufOn>
+      <ts:enqOn>${options.enqueue ?? false}</ts:enqOn>
+      <ts:rfcOn>${options.rfc ?? false}</ts:rfcOn>
+      <ts:httpOn>${options.http ?? false}</ts:httpOn>
+      <ts:apcOn>false</ts:apcOn>
+      <ts:amcOn>false</ts:amcOn>
+      <ts:authOn>${options.auth ?? false}</ts:authOn>
+    </ts:traceTypes>
+    <ts:traceProperties>
+      <ts:includeMissingTableNameOn>false</ts:includeMissingTableNameOn>
+      <ts:authErrorsOnly>false</ts:authErrorsOnly>
+      <ts:stackTraceOn>${options.stackTrace !== false}</ts:stackTraceOn>
+      <ts:includedTables/>
+      <ts:excludedTables/>
+    </ts:traceProperties>
+    <ts:traceFilter>
+      <ts:traceUser>${this.escapeXml(traceUser)}</ts:traceUser>
+      <ts:transactionCode/>
+      <ts:program/>
+      <ts:rfcFunction/>
+      <ts:url/>
+      <ts:wpId/>
+    </ts:traceFilter>
+  </ts:traceStateInstance>
+</ts:traceStateInstanceTable>`;
+
+    return (await this.putWithCsrf(
+      "/sap/bc/adt/st05/trace/state",
+      xml,
+      "application/vnd.sap.adt.perf.trace.state.v1+xml",
+      "application/vnd.sap.adt.perf.trace.state.v1+xml"
+    )).data as string;
+  }
+
+  async disableSt05Trace(): Promise<string> {
+    const state = await this.getSt05TraceState();
+
+    const instanceMatch = state.match(/<ts:instance>([^<]+)<\/ts:instance>/);
+    const hostMatch = state.match(/<ts:host>([^<]+)<\/ts:host>/);
+    const instance = instanceMatch?.[1] ?? "";
+    const host = hostMatch?.[1] ?? "";
+
+    const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<ts:traceStateInstanceTable xmlns:ts="http://www.sap.com/adt/tools/performance/tracestate">
+  <ts:traceStateInstance>
+    <ts:instance>${this.escapeXml(instance)}</ts:instance>
+    <ts:host>${this.escapeXml(host)}</ts:host>
+    <ts:isLocal>true</ts:isLocal>
+    <ts:isSelected>false</ts:isSelected>
+    <ts:modificationUser>${this.escapeXml(this.config.username.toUpperCase())}</ts:modificationUser>
+    <ts:modificationDateTime>${new Date().toISOString().replace(/\.\d+Z$/, "Z")}</ts:modificationDateTime>
+    <ts:traceTypes>
+      <ts:sqlOn>false</ts:sqlOn>
+      <ts:bufOn>false</ts:bufOn>
+      <ts:enqOn>false</ts:enqOn>
+      <ts:rfcOn>false</ts:rfcOn>
+      <ts:httpOn>false</ts:httpOn>
+      <ts:apcOn>false</ts:apcOn>
+      <ts:amcOn>false</ts:amcOn>
+      <ts:authOn>false</ts:authOn>
+    </ts:traceTypes>
+    <ts:traceProperties>
+      <ts:includeMissingTableNameOn>false</ts:includeMissingTableNameOn>
+      <ts:authErrorsOnly>false</ts:authErrorsOnly>
+      <ts:stackTraceOn>false</ts:stackTraceOn>
+      <ts:includedTables/>
+      <ts:excludedTables/>
+    </ts:traceProperties>
+    <ts:traceFilter>
+      <ts:traceUser/>
+      <ts:transactionCode/>
+      <ts:program/>
+      <ts:rfcFunction/>
+      <ts:url/>
+      <ts:wpId/>
+    </ts:traceFilter>
+  </ts:traceStateInstance>
+</ts:traceStateInstanceTable>`;
+
+    return (await this.putWithCsrf(
+      "/sap/bc/adt/st05/trace/state",
+      xml,
+      "application/vnd.sap.adt.perf.trace.state.v1+xml",
+      "application/vnd.sap.adt.perf.trace.state.v1+xml"
+    )).data as string;
   }
 
   private escapeXml(s: string): string {
