@@ -233,7 +233,7 @@ export class AdtClient {
   async getTraceHitlist(traceId: string): Promise<string> {
     const response = await this.http.get<string>(
       `/sap/bc/adt/runtime/traces/abaptraces/${encodeURIComponent(traceId)}/hitlist`,
-      { headers: { Accept: "*/*" }, responseType: "text" }
+      { headers: { Accept: "*/*" }, responseType: "text", timeout: 120000 }
     );
     return response.data;
   }
@@ -241,7 +241,7 @@ export class AdtClient {
   async getTraceDbAccess(traceId: string): Promise<string> {
     const response = await this.http.get<string>(
       `/sap/bc/adt/runtime/traces/abaptraces/${encodeURIComponent(traceId)}/dbAccesses`,
-      { headers: { Accept: "*/*" }, responseType: "text" }
+      { headers: { Accept: "*/*" }, responseType: "text", timeout: 120000 }
     );
     return response.data;
   }
@@ -249,7 +249,7 @@ export class AdtClient {
   async getTraceStatements(traceId: string): Promise<string> {
     const response = await this.http.get<string>(
       `/sap/bc/adt/runtime/traces/abaptraces/${encodeURIComponent(traceId)}/statements`,
-      { headers: { Accept: "*/*" }, responseType: "text" }
+      { headers: { Accept: "*/*" }, responseType: "text", timeout: 120000 }
     );
     return response.data;
   }
