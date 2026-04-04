@@ -62,6 +62,8 @@ const CreateTraceConfigSchema = z.object({
   object_name: z.string(),
   process_type: z.string().optional(),
   description: z.string().optional(),
+  max_executions: z.number().optional(),
+  object_type: z.string().optional(),
 });
 const TraceConfigIdSchema = z.object({ config_id: z.string() });
 
@@ -132,6 +134,15 @@ const DebuggerChildVariablesSchema = z.object({ variable_name: z.string() });
 const DebuggerSetVariableSchema = z.object({
   variable_name: z.string(),
   value: z.string(),
+});
+const DebuggerSessionSchema = z.object({
+  terminal_id: z.string().optional(),
+  ide_id: z.string().optional(),
+  user: z.string().optional(),
+});
+const DebuggerWatchpointSchema = z.object({
+  variable_name: z.string(),
+  condition: z.string().optional(),
 });
 
 export function createMcpServer(config: AdtConfig): Server {
@@ -479,8 +490,10 @@ export function createMcpServer(config: AdtConfig): Server {
           type: "object" as const,
           properties: {
             object_name: { type: "string", description: "Object name to trace (e.g. program or transaction)" },
-            process_type: { type: "string", description: "Process type: HTTP, DIALOG, RFC, etc. (default: HTTP)" },
+            process_type: { type: "string", description: "Process type: HTTP, DIALOG, RFC, etc. (default: any)" },
             description: { type: "string", description: "Description for the trace configuration" },
+            max_executions: { type: "number", description: "Maximum number of executions to capture (default: 10)" },
+            object_type: { type: "string", description: "Object type: any, report, transaction, functionmodule, url (default: any)" },
           },
           required: ["object_name"],
         },
@@ -605,7 +618,7 @@ export function createMcpServer(config: AdtConfig): Server {
       },
       {
         name: "get_debugger_variables",
-        description: "Get variable values in the current debug context",
+        description: "Get variable values in the current debug context. Returns value statements for each variable.",
         inputSchema: {
           type: "object" as const,
           properties: {
@@ -627,7 +640,7 @@ export function createMcpServer(config: AdtConfig): Server {
       },
       {
         name: "debugger_step",
-        description: "Execute a debug step (into, over, return, continue, run-to-line, jump-to-line, terminate)",
+        description: "Execute a debug step. stepInto/stepOver/stepReturn/stepContinue use batch mode (step+getStack). stepRunToLine/stepJumpToLine/terminateDebuggee use action mode.",
         inputSchema: {
           type: "object" as const,
           properties: {
@@ -659,6 +672,40 @@ export function createMcpServer(config: AdtConfig): Server {
             value: { type: "string", description: "New value to set" },
           },
           required: ["variable_name", "value"],
+        },
+      },
+      {
+        name: "get_debugger_session",
+        description: "Check if a debugger session is currently attached. Returns session info without blocking.",
+        inputSchema: {
+          type: "object" as const,
+          properties: {
+            terminal_id: { type: "string", description: "Terminal identifier (default: MCP_TERMINAL)" },
+            ide_id: { type: "string", description: "IDE identifier (default: MCP_IDE)" },
+            user: { type: "string", description: "SAP username (default: current user)" },
+          },
+          required: [],
+        },
+      },
+      {
+        name: "insert_watchpoint",
+        description: "Set a watchpoint on a variable. Execution will pause when the variable's value changes. Must have an active debug session.",
+        inputSchema: {
+          type: "object" as const,
+          properties: {
+            variable_name: { type: "string", description: "Variable name to watch (e.g. VBAK-FAKSK)" },
+            condition: { type: "string", description: "Optional condition expression for the watchpoint" },
+          },
+          required: ["variable_name"],
+        },
+      },
+      {
+        name: "get_watchpoints",
+        description: "List all active watchpoints in the current debug session.",
+        inputSchema: {
+          type: "object" as const,
+          properties: {},
+          required: [],
         },
       },
       {
@@ -984,8 +1031,8 @@ export function createMcpServer(config: AdtConfig): Server {
         }
 
         case "create_trace_config": {
-          const { object_name, process_type, description } = CreateTraceConfigSchema.parse(args);
-          const result = await client.createTraceConfig(object_name, process_type, description);
+          const { object_name, process_type, description, max_executions, object_type } = CreateTraceConfigSchema.parse(args);
+          const result = await client.createTraceConfig(object_name, process_type, description, max_executions, object_type);
           return { content: [{ type: "text", text: result }] };
         }
 
@@ -1077,6 +1124,23 @@ export function createMcpServer(config: AdtConfig): Server {
         case "set_debugger_variable_value": {
           const { variable_name, value } = DebuggerSetVariableSchema.parse(args);
           const result = await client.debuggerSetVariableValue(variable_name, value);
+          return { content: [{ type: "text", text: result }] };
+        }
+
+        case "get_debugger_session": {
+          const { terminal_id, ide_id, user } = DebuggerSessionSchema.parse(args);
+          const result = await client.debuggerGetSession(terminal_id, ide_id, user);
+          return { content: [{ type: "text", text: result }] };
+        }
+
+        case "insert_watchpoint": {
+          const { variable_name, condition } = DebuggerWatchpointSchema.parse(args);
+          const result = await client.debuggerInsertWatchpoint(variable_name, condition);
+          return { content: [{ type: "text", text: result }] };
+        }
+
+        case "get_watchpoints": {
+          const result = await client.debuggerGetWatchpoints();
           return { content: [{ type: "text", text: result }] };
         }
 

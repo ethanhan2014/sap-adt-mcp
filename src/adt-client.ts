@@ -261,11 +261,19 @@ export class AdtClient {
     return resp.data as string || "Trace deleted";
   }
 
-  async createTraceConfig(objectName: string, processType = "HTTP", description = ""): Promise<string> {
+  async createTraceConfig(objectName: string, processType = "any", description = "", maxExecutions = 10, objectType = "any"): Promise<string> {
+    const processTypeUri = processType.startsWith("/sap/")
+      ? processType
+      : `/sap/bc/adt/runtime/traces/abaptraces/processtypes/${processType}`;
+    const objectTypeUri = objectType.startsWith("/sap/")
+      ? objectType
+      : `/sap/bc/adt/runtime/traces/abaptraces/objecttypes/${objectType}`;
     const params = new URLSearchParams({
-      "object-name": objectName,
-      "process-type": processType,
+      objectName,
+      objectType: objectTypeUri,
+      processType: processTypeUri,
       description,
+      maximalExecutions: String(maxExecutions),
     });
     return (await this.postWithCsrf(
       `/sap/bc/adt/runtime/traces/abaptraces/requests?${params.toString()}`,
@@ -451,6 +459,19 @@ ${componentsXml}
     }
   }
 
+  async debuggerGetSession(terminalId = "MCP_TERMINAL", ideId = "MCP_IDE", user?: string): Promise<string> {
+    this.ensureDebugSession();
+    const u = encodeURIComponent((user ?? this.config.username).toUpperCase());
+    const resp = await this.http.get(
+      `/sap/bc/adt/debugger/listeners?debuggingMode=user&terminalId=${encodeURIComponent(terminalId)}&ideId=${encodeURIComponent(ideId)}&requestUser=${u}`,
+      {
+        headers: this.statefulHeaders({ Accept: "application/xml" }),
+        responseType: "text",
+      }
+    );
+    return resp.data as string;
+  }
+
   async debuggerSetBreakpoints(uri: string, line: number, user?: string): Promise<string> {
     this.ensureDebugSession();
     const u = (user ?? this.config.username).toUpperCase();
@@ -568,6 +589,30 @@ ${componentsXml}
         responseType: "text",
       }
     );
+    return resp.data as string;
+  }
+
+  async debuggerInsertWatchpoint(variableName: string, condition?: string): Promise<string> {
+    this.ensureDebugSession();
+    const params = new URLSearchParams({ variableName });
+    if (condition) params.set("condition", condition);
+    const resp = await this.http.post(
+      `/sap/bc/adt/debugger/watchpoints?${params.toString()}`,
+      "",
+      {
+        headers: this.statefulHeaders({ Accept: "application/xml" }),
+        responseType: "text",
+      }
+    );
+    return resp.data as string;
+  }
+
+  async debuggerGetWatchpoints(): Promise<string> {
+    this.ensureDebugSession();
+    const resp = await this.http.get("/sap/bc/adt/debugger/watchpoints", {
+      headers: this.statefulHeaders({ Accept: "application/xml" }),
+      responseType: "text",
+    });
     return resp.data as string;
   }
 
