@@ -40,6 +40,26 @@ const ChangeAbapProgramSchema = z.object({
   name: z.string(),
   source: z.string(),
 });
+const CreateClassSchema = z.object({
+  name: z.string(),
+  description: z.string(),
+  source: z.string(),
+  package: z.string().optional(),
+});
+const ChangeClassSchema = z.object({
+  name: z.string(),
+  source: z.string(),
+});
+const CreateInterfaceSchema = z.object({
+  name: z.string(),
+  description: z.string(),
+  source: z.string(),
+  package: z.string().optional(),
+});
+const ChangeInterfaceSchema = z.object({
+  name: z.string(),
+  source: z.string(),
+});
 
 // Transport schemas
 const TransportInfoSchema = z.object({
@@ -271,6 +291,58 @@ export function createMcpServer(config: AdtConfig): Server {
             package: { type: "string", description: "Development package (default: $TMP for local objects)" },
           },
           required: ["name", "description", "source"],
+        },
+      },
+      {
+        name: "create_abap_class",
+        description: "Create a new ABAP class in the SAP system. Creates the class, writes source code, and activates it. By default creates in $TMP (local objects, no transport required).",
+        inputSchema: {
+          type: "object" as const,
+          properties: {
+            name: { type: "string", description: "Class name (must start with Z or Y, e.g. ZCL_MY_CLASS)" },
+            description: { type: "string", description: "Short description of the class (max 70 chars)" },
+            source: { type: "string", description: "ABAP class source code. Must include CLASS definition and IMPLEMENTATION." },
+            package: { type: "string", description: "Development package (default: $TMP for local objects)" },
+          },
+          required: ["name", "description", "source"],
+        },
+      },
+      {
+        name: "change_abap_class",
+        description: "Modify an existing ABAP class in the SAP system. Locks the object, writes the new source, activates, and unlocks. Use get_class first to read the current source.",
+        inputSchema: {
+          type: "object" as const,
+          properties: {
+            name: { type: "string", description: "Class name (e.g. ZCL_MY_CLASS)" },
+            source: { type: "string", description: "Complete new ABAP class source code including CLASS definition and IMPLEMENTATION." },
+          },
+          required: ["name", "source"],
+        },
+      },
+      {
+        name: "create_interface",
+        description: "Create a new ABAP interface in the SAP system. Creates the interface, writes source code, and activates it. By default creates in $TMP (local objects, no transport required).",
+        inputSchema: {
+          type: "object" as const,
+          properties: {
+            name: { type: "string", description: "Interface name (must start with Z or Y, e.g. ZIF_MY_INTERFACE)" },
+            description: { type: "string", description: "Short description of the interface (max 70 chars)" },
+            source: { type: "string", description: "ABAP interface source code. Must include INTERFACE definition." },
+            package: { type: "string", description: "Development package (default: $TMP for local objects)" },
+          },
+          required: ["name", "description", "source"],
+        },
+      },
+      {
+        name: "change_interface",
+        description: "Modify an existing ABAP interface in the SAP system. Locks the object, writes the new source, activates, and unlocks. Use get_interface first to read the current source.",
+        inputSchema: {
+          type: "object" as const,
+          properties: {
+            name: { type: "string", description: "Interface name (e.g. ZIF_MY_INTERFACE)" },
+            source: { type: "string", description: "Complete new ABAP interface source code including INTERFACE definition." },
+          },
+          required: ["name", "source"],
         },
       },
       {
@@ -1171,6 +1243,30 @@ export function createMcpServer(config: AdtConfig): Server {
         case "create_abap_program": {
           const { name: progName, description, source, package: pkg } = CreateProgramSchema.parse(args);
           const log = await client.createAbapProgram(progName, description, source, pkg ?? "$TMP");
+          return { content: [{ type: "text", text: log }] };
+        }
+
+        case "create_abap_class": {
+          const { name: className, description, source, package: pkg } = CreateClassSchema.parse(args);
+          const log = await client.createAbapClass(className, description, source, pkg ?? "$TMP");
+          return { content: [{ type: "text", text: log }] };
+        }
+
+        case "change_abap_class": {
+          const { name: className, source } = ChangeClassSchema.parse(args);
+          const log = await client.changeAbapClass(className, source);
+          return { content: [{ type: "text", text: log }] };
+        }
+
+        case "create_interface": {
+          const { name: intfName, description, source, package: pkg } = CreateInterfaceSchema.parse(args);
+          const log = await client.createInterface(intfName, description, source, pkg ?? "$TMP");
+          return { content: [{ type: "text", text: log }] };
+        }
+
+        case "change_interface": {
+          const { name: intfName, source } = ChangeInterfaceSchema.parse(args);
+          const log = await client.changeInterface(intfName, source);
           return { content: [{ type: "text", text: log }] };
         }
 

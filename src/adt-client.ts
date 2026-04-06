@@ -825,6 +825,408 @@ ${componentsXml}
     return log.join("\n");
   }
 
+  async createAbapClass(name: string, description: string, source: string, pkg = "$TMP"): Promise<string> {
+    await this.fetchStatefulCsrf();
+    const log: string[] = [];
+    const nameLower = name.toLowerCase();
+    const nameUpper = name.toUpperCase();
+
+    try {
+      // 1. Create class shell
+      const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<class:abapClass xmlns:class="http://www.sap.com/adt/oo/classes"
+  xmlns:adtcore="http://www.sap.com/adt/core"
+  adtcore:type="CLAS/OC" adtcore:description="${this.escapeXml(description)}"
+  adtcore:language="EN" adtcore:name="${nameUpper}"
+  adtcore:masterLanguage="EN" adtcore:responsible="${this.config.username.toUpperCase()}">
+  <adtcore:packageRef adtcore:name="${pkg}"/>
+</class:abapClass>`;
+
+      const createResp = await this.http.post("/sap/bc/adt/oo/classes", xml, {
+        headers: this.statefulHeaders({
+          "Content-Type": "application/vnd.sap.adt.oo.classes.v2+xml; charset=utf-8",
+          Accept: "application/vnd.sap.adt.oo.classes.v2+xml",
+        }),
+        validateStatus: () => true,
+      });
+
+      if (createResp.status >= 400) {
+        const errData = createResp.data as string;
+        const msgMatch = errData.match(/<msg:shortText>([\s\S]*?)<\/msg:shortText>/);
+        log.push(`Failed to create class ${nameUpper} (HTTP ${createResp.status}): ${msgMatch?.[1] ?? errData.substring(0, 500)}`);
+        return log.join("\n");
+      }
+      log.push(`Created class ${nameUpper} in package ${pkg}`);
+
+      // 2. Lock
+      const lockResp = await this.http.post(
+        `/sap/bc/adt/oo/classes/${nameLower}?_action=LOCK&accessMode=MODIFY`,
+        "",
+        { headers: this.statefulHeaders(), responseType: "text", validateStatus: () => true }
+      );
+      const lockData = lockResp.data as string;
+      const lockMatch = lockData.match(/<LOCK_HANDLE>([^<]+)<\/LOCK_HANDLE>/);
+
+      if (!lockMatch?.[1]) {
+        log.push(`Failed to lock class (HTTP ${lockResp.status}): ${lockData.substring(0, 500)}`);
+        return log.join("\n");
+      }
+
+      const lockHandle = lockMatch[1];
+      log.push("Locked for editing");
+
+      // 3. Write source
+      await this.http.put(
+        `/sap/bc/adt/oo/classes/${nameLower}/source/main?lockHandle=${encodeURIComponent(lockHandle)}`,
+        source,
+        {
+          headers: this.statefulHeaders({ "Content-Type": "text/plain; charset=utf-8" }),
+          responseType: "text",
+        }
+      );
+      log.push("Source code written");
+
+      // 4. Activate (while still locked)
+      const activateBody = `<?xml version="1.0" encoding="UTF-8"?>
+<adtcore:objectReferences xmlns:adtcore="http://www.sap.com/adt/core">
+  <adtcore:objectReference adtcore:uri="/sap/bc/adt/oo/classes/${nameLower}" adtcore:name="${nameUpper}"/>
+</adtcore:objectReferences>`;
+
+      const actResp = await this.http.post(
+        "/sap/bc/adt/activation?method=activate&preauditRequested=true",
+        activateBody,
+        {
+          headers: this.statefulHeaders({
+            "Content-Type": "application/xml",
+            Accept: "application/xml",
+          }),
+          responseType: "text",
+          validateStatus: () => true,
+        }
+      );
+
+      const actData = actResp.data as string;
+      if (actData.includes('activationExecuted="true"')) {
+        log.push("Activated successfully");
+      } else {
+        const msgMatch = actData.match(/<msg:shortText>([\s\S]*?)<\/msg:shortText>/);
+        log.push(`Activation: ${msgMatch?.[1] ?? `HTTP ${actResp.status}`}`);
+      }
+
+      // 5. Unlock (after activation)
+      await this.http.post(
+        `/sap/bc/adt/oo/classes/${nameLower}?_action=UNLOCK&lockHandle=${encodeURIComponent(lockHandle)}`,
+        "",
+        { headers: this.statefulHeaders(), responseType: "text" }
+      );
+      log.push("Unlocked");
+    } finally {
+      await this.endStatefulSession();
+    }
+
+    return log.join("\n");
+  }
+
+  async changeAbapClass(name: string, source: string, transport?: string): Promise<string> {
+    await this.fetchStatefulCsrf();
+    const log: string[] = [];
+    const nameLower = name.toLowerCase();
+    const nameUpper = name.toUpperCase();
+
+    try {
+      // 1. Lock
+      const lockResp = await this.http.post(
+        `/sap/bc/adt/oo/classes/${nameLower}?_action=LOCK&accessMode=MODIFY`,
+        "",
+        { headers: this.statefulHeaders(), responseType: "text", validateStatus: () => true }
+      );
+      const lockData = lockResp.data as string;
+      const lockMatch = lockData.match(/<LOCK_HANDLE>([^<]+)<\/LOCK_HANDLE>/);
+
+      if (!lockMatch?.[1]) {
+        log.push(`Failed to lock class ${nameUpper} (HTTP ${lockResp.status})`);
+        log.push(lockData.substring(0, 500));
+        return log.join("\n");
+      }
+
+      const lockHandle = lockMatch[1];
+      log.push(`Locked ${nameUpper} for editing`);
+
+      // 2. Write source (auto-detect transport if not provided)
+      let corrNr = transport ?? "";
+      let writeResp = await this.http.put(
+        `/sap/bc/adt/oo/classes/${nameLower}/source/main?lockHandle=${encodeURIComponent(lockHandle)}&corrNr=${corrNr}`,
+        source,
+        {
+          headers: this.statefulHeaders({ "Content-Type": "text/plain; charset=utf-8" }),
+          responseType: "text",
+          validateStatus: () => true,
+        }
+      );
+      if (writeResp.status >= 400 && !transport) {
+        const trMatch = (writeResp.data as string).match(/request\s+([A-Z]{3}K\d{6})/);
+        if (trMatch) {
+          corrNr = trMatch[1];
+          log.push(`Auto-detected transport ${corrNr}`);
+          writeResp = await this.http.put(
+            `/sap/bc/adt/oo/classes/${nameLower}/source/main?lockHandle=${encodeURIComponent(lockHandle)}&corrNr=${corrNr}`,
+            source,
+            {
+              headers: this.statefulHeaders({ "Content-Type": "text/plain; charset=utf-8" }),
+              responseType: "text",
+              validateStatus: () => true,
+            }
+          );
+        }
+      }
+      if (writeResp.status >= 400) {
+        log.push(`Write failed (HTTP ${writeResp.status}): ${(writeResp.data as string).substring(0, 500)}`);
+      } else {
+        log.push("Source code written");
+      }
+
+      // 3. Unlock (must unlock before activation)
+      await this.http.post(
+        `/sap/bc/adt/oo/classes/${nameLower}?_action=UNLOCK&lockHandle=${encodeURIComponent(lockHandle)}`,
+        "",
+        { headers: this.statefulHeaders(), responseType: "text", validateStatus: () => true }
+      );
+      log.push("Unlocked");
+
+      // 4. Activate
+      const activateBody = `<?xml version="1.0" encoding="UTF-8"?>
+<adtcore:objectReferences xmlns:adtcore="http://www.sap.com/adt/core">
+  <adtcore:objectReference adtcore:uri="/sap/bc/adt/oo/classes/${nameLower}" adtcore:name="${nameUpper}"/>
+</adtcore:objectReferences>`;
+
+      const actResp = await this.http.post(
+        "/sap/bc/adt/activation?method=activate&preauditRequested=true",
+        activateBody,
+        {
+          headers: this.statefulHeaders({
+            "Content-Type": "application/xml",
+            Accept: "application/xml",
+          }),
+          responseType: "text",
+          validateStatus: () => true,
+        }
+      );
+
+      const actData = actResp.data as string;
+      if (actData.includes('activationExecuted="true"')) {
+        log.push("Activated successfully");
+      } else {
+        const msgMatch = actData.match(/<msg:shortText>([\s\S]*?)<\/msg:shortText>/);
+        log.push(`Activation: ${msgMatch?.[1] ?? `HTTP ${actResp.status}`}`);
+      }
+    } finally {
+      await this.endStatefulSession();
+    }
+
+    return log.join("\n");
+  }
+
+  async createInterface(name: string, description: string, source: string, pkg = "$TMP"): Promise<string> {
+    await this.fetchStatefulCsrf();
+    const log: string[] = [];
+    const nameLower = name.toLowerCase();
+    const nameUpper = name.toUpperCase();
+
+    try {
+      // 1. Create interface shell
+      const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<intf:abapInterface xmlns:intf="http://www.sap.com/adt/oo/interfaces"
+  xmlns:adtcore="http://www.sap.com/adt/core"
+  adtcore:type="INTF/OI" adtcore:description="${this.escapeXml(description)}"
+  adtcore:language="EN" adtcore:name="${nameUpper}"
+  adtcore:masterLanguage="EN" adtcore:responsible="${this.config.username.toUpperCase()}">
+  <adtcore:packageRef adtcore:name="${pkg}"/>
+</intf:abapInterface>`;
+
+      const createResp = await this.http.post("/sap/bc/adt/oo/interfaces", xml, {
+        headers: this.statefulHeaders({
+          "Content-Type": "application/vnd.sap.adt.oo.interfaces.v2+xml; charset=utf-8",
+          Accept: "application/vnd.sap.adt.oo.interfaces.v2+xml",
+        }),
+        validateStatus: () => true,
+      });
+
+      if (createResp.status >= 400) {
+        const errData = createResp.data as string;
+        const msgMatch = errData.match(/<msg:shortText>([\s\S]*?)<\/msg:shortText>/);
+        log.push(`Failed to create interface ${nameUpper} (HTTP ${createResp.status}): ${msgMatch?.[1] ?? errData.substring(0, 500)}`);
+        return log.join("\n");
+      }
+      log.push(`Created interface ${nameUpper} in package ${pkg}`);
+
+      // 2. Lock
+      const lockResp = await this.http.post(
+        `/sap/bc/adt/oo/interfaces/${nameLower}?_action=LOCK&accessMode=MODIFY`,
+        "",
+        { headers: this.statefulHeaders(), responseType: "text", validateStatus: () => true }
+      );
+      const lockData = lockResp.data as string;
+      const lockMatch = lockData.match(/<LOCK_HANDLE>([^<]+)<\/LOCK_HANDLE>/);
+
+      if (!lockMatch?.[1]) {
+        log.push(`Failed to lock interface (HTTP ${lockResp.status}): ${lockData.substring(0, 500)}`);
+        return log.join("\n");
+      }
+
+      const lockHandle = lockMatch[1];
+      log.push("Locked for editing");
+
+      // 3. Write source
+      await this.http.put(
+        `/sap/bc/adt/oo/interfaces/${nameLower}/source/main?lockHandle=${encodeURIComponent(lockHandle)}`,
+        source,
+        {
+          headers: this.statefulHeaders({ "Content-Type": "text/plain; charset=utf-8" }),
+          responseType: "text",
+        }
+      );
+      log.push("Source code written");
+
+      // 4. Activate (while still locked)
+      const activateBody = `<?xml version="1.0" encoding="UTF-8"?>
+<adtcore:objectReferences xmlns:adtcore="http://www.sap.com/adt/core">
+  <adtcore:objectReference adtcore:uri="/sap/bc/adt/oo/interfaces/${nameLower}" adtcore:name="${nameUpper}"/>
+</adtcore:objectReferences>`;
+
+      const actResp = await this.http.post(
+        "/sap/bc/adt/activation?method=activate&preauditRequested=true",
+        activateBody,
+        {
+          headers: this.statefulHeaders({
+            "Content-Type": "application/xml",
+            Accept: "application/xml",
+          }),
+          responseType: "text",
+          validateStatus: () => true,
+        }
+      );
+
+      const actData = actResp.data as string;
+      if (actData.includes('activationExecuted="true"')) {
+        log.push("Activated successfully");
+      } else {
+        const msgMatch = actData.match(/<msg:shortText>([\s\S]*?)<\/msg:shortText>/);
+        log.push(`Activation: ${msgMatch?.[1] ?? `HTTP ${actResp.status}`}`);
+      }
+
+      // 5. Unlock (after activation)
+      await this.http.post(
+        `/sap/bc/adt/oo/interfaces/${nameLower}?_action=UNLOCK&lockHandle=${encodeURIComponent(lockHandle)}`,
+        "",
+        { headers: this.statefulHeaders(), responseType: "text" }
+      );
+      log.push("Unlocked");
+    } finally {
+      await this.endStatefulSession();
+    }
+
+    return log.join("\n");
+  }
+
+  async changeInterface(name: string, source: string, transport?: string): Promise<string> {
+    await this.fetchStatefulCsrf();
+    const log: string[] = [];
+    const nameLower = name.toLowerCase();
+    const nameUpper = name.toUpperCase();
+
+    try {
+      // 1. Lock
+      const lockResp = await this.http.post(
+        `/sap/bc/adt/oo/interfaces/${nameLower}?_action=LOCK&accessMode=MODIFY`,
+        "",
+        { headers: this.statefulHeaders(), responseType: "text", validateStatus: () => true }
+      );
+      const lockData = lockResp.data as string;
+      const lockMatch = lockData.match(/<LOCK_HANDLE>([^<]+)<\/LOCK_HANDLE>/);
+
+      if (!lockMatch?.[1]) {
+        log.push(`Failed to lock interface ${nameUpper} (HTTP ${lockResp.status})`);
+        log.push(lockData.substring(0, 500));
+        return log.join("\n");
+      }
+
+      const lockHandle = lockMatch[1];
+      log.push(`Locked ${nameUpper} for editing`);
+
+      // 2. Write source (auto-detect transport if not provided)
+      let corrNr = transport ?? "";
+      let writeResp = await this.http.put(
+        `/sap/bc/adt/oo/interfaces/${nameLower}/source/main?lockHandle=${encodeURIComponent(lockHandle)}&corrNr=${corrNr}`,
+        source,
+        {
+          headers: this.statefulHeaders({ "Content-Type": "text/plain; charset=utf-8" }),
+          responseType: "text",
+          validateStatus: () => true,
+        }
+      );
+      if (writeResp.status >= 400 && !transport) {
+        const trMatch = (writeResp.data as string).match(/request\s+([A-Z]{3}K\d{6})/);
+        if (trMatch) {
+          corrNr = trMatch[1];
+          log.push(`Auto-detected transport ${corrNr}`);
+          writeResp = await this.http.put(
+            `/sap/bc/adt/oo/interfaces/${nameLower}/source/main?lockHandle=${encodeURIComponent(lockHandle)}&corrNr=${corrNr}`,
+            source,
+            {
+              headers: this.statefulHeaders({ "Content-Type": "text/plain; charset=utf-8" }),
+              responseType: "text",
+              validateStatus: () => true,
+            }
+          );
+        }
+      }
+      if (writeResp.status >= 400) {
+        log.push(`Write failed (HTTP ${writeResp.status}): ${(writeResp.data as string).substring(0, 500)}`);
+      } else {
+        log.push("Source code written");
+      }
+
+      // 3. Unlock (must unlock before activation)
+      await this.http.post(
+        `/sap/bc/adt/oo/interfaces/${nameLower}?_action=UNLOCK&lockHandle=${encodeURIComponent(lockHandle)}`,
+        "",
+        { headers: this.statefulHeaders(), responseType: "text", validateStatus: () => true }
+      );
+      log.push("Unlocked");
+
+      // 4. Activate
+      const activateBody = `<?xml version="1.0" encoding="UTF-8"?>
+<adtcore:objectReferences xmlns:adtcore="http://www.sap.com/adt/core">
+  <adtcore:objectReference adtcore:uri="/sap/bc/adt/oo/interfaces/${nameLower}" adtcore:name="${nameUpper}"/>
+</adtcore:objectReferences>`;
+
+      const actResp = await this.http.post(
+        "/sap/bc/adt/activation?method=activate&preauditRequested=true",
+        activateBody,
+        {
+          headers: this.statefulHeaders({
+            "Content-Type": "application/xml",
+            Accept: "application/xml",
+          }),
+          responseType: "text",
+          validateStatus: () => true,
+        }
+      );
+
+      const actData = actResp.data as string;
+      if (actData.includes('activationExecuted="true"')) {
+        log.push("Activated successfully");
+      } else {
+        const msgMatch = actData.match(/<msg:shortText>([\s\S]*?)<\/msg:shortText>/);
+        log.push(`Activation: ${msgMatch?.[1] ?? `HTTP ${actResp.status}`}`);
+      }
+    } finally {
+      await this.endStatefulSession();
+    }
+
+    return log.join("\n");
+  }
+
   async changeCdsView(name: string, source: string): Promise<string> {
     await this.fetchStatefulCsrf();
     const log: string[] = [];
@@ -836,7 +1238,7 @@ ${componentsXml}
       const lockResp = await this.http.post(
         `/sap/bc/adt/ddic/ddl/sources/${nameLower}?_action=LOCK&accessMode=MODIFY`,
         "",
-        { headers: this.statefulHeaders(), responseType: "text", validateStatus: () => true }
+        { headers: this.statefulHeaders({ Accept: "application/vnd.sap.as+xml" }), responseType: "text", validateStatus: () => true }
       );
       const lockData = lockResp.data as string;
       const lockMatch = lockData.match(/<LOCK_HANDLE>([^<]+)<\/LOCK_HANDLE>/);
@@ -861,7 +1263,15 @@ ${componentsXml}
       );
       log.push("Source code written");
 
-      // 3. Activate
+      // 3. Unlock (must unlock before activation)
+      await this.http.post(
+        `/sap/bc/adt/ddic/ddl/sources/${nameLower}?_action=UNLOCK&lockHandle=${encodeURIComponent(lockHandle)}`,
+        "",
+        { headers: this.statefulHeaders({ Accept: "application/vnd.sap.as+xml" }), responseType: "text" }
+      );
+      log.push("Unlocked");
+
+      // 4. Activate
       const activateBody = `<?xml version="1.0" encoding="UTF-8"?>
 <adtcore:objectReferences xmlns:adtcore="http://www.sap.com/adt/core">
   <adtcore:objectReference adtcore:uri="/sap/bc/adt/ddic/ddl/sources/${nameLower}" adtcore:name="${nameUpper}"/>
@@ -887,14 +1297,6 @@ ${componentsXml}
         const msgMatch = actData.match(/<msg:shortText>([\s\S]*?)<\/msg:shortText>/);
         log.push(`Activation: ${msgMatch?.[1] ?? `HTTP ${actResp.status}`}`);
       }
-
-      // 4. Unlock
-      await this.http.post(
-        `/sap/bc/adt/ddic/ddl/sources/${nameLower}?_action=UNLOCK&lockHandle=${encodeURIComponent(lockHandle)}`,
-        "",
-        { headers: this.statefulHeaders(), responseType: "text" }
-      );
-      log.push("Unlocked");
     } finally {
       await this.endStatefulSession();
     }
@@ -939,7 +1341,7 @@ ${componentsXml}
       const lockResp = await this.http.post(
         `/sap/bc/adt/ddic/ddl/sources/${nameLower}?_action=LOCK&accessMode=MODIFY`,
         "",
-        { headers: this.statefulHeaders(), responseType: "text", validateStatus: () => true }
+        { headers: this.statefulHeaders({ Accept: "application/vnd.sap.as+xml" }), responseType: "text", validateStatus: () => true }
       );
       const lockData = lockResp.data as string;
       const lockMatch = lockData.match(/<LOCK_HANDLE>([^<]+)<\/LOCK_HANDLE>/);
@@ -963,7 +1365,15 @@ ${componentsXml}
       );
       log.push("Source code written");
 
-      // 4. Activate (must happen while still locked)
+      // 4. Unlock (must unlock before activation)
+      await this.http.post(
+        `/sap/bc/adt/ddic/ddl/sources/${nameLower}?_action=UNLOCK&lockHandle=${encodeURIComponent(lockHandle)}`,
+        "",
+        { headers: this.statefulHeaders({ Accept: "application/vnd.sap.as+xml" }), responseType: "text" }
+      );
+      log.push("Unlocked");
+
+      // 5. Activate
       const activateBody = `<?xml version="1.0" encoding="UTF-8"?>
 <adtcore:objectReferences xmlns:adtcore="http://www.sap.com/adt/core">
   <adtcore:objectReference adtcore:uri="/sap/bc/adt/ddic/ddl/sources/${nameLower}" adtcore:name="${nameUpper}"/>
@@ -989,14 +1399,6 @@ ${componentsXml}
         const msgMatch = actData.match(/<msg:shortText>([\s\S]*?)<\/msg:shortText>/);
         log.push(`Activation: ${msgMatch?.[1] ?? `HTTP ${actResp.status}`}`);
       }
-
-      // 5. Unlock (after activation)
-      await this.http.post(
-        `/sap/bc/adt/ddic/ddl/sources/${nameLower}?_action=UNLOCK&lockHandle=${encodeURIComponent(lockHandle)}`,
-        "",
-        { headers: this.statefulHeaders(), responseType: "text" }
-      );
-      log.push("Unlocked");
     } finally {
       await this.endStatefulSession();
     }
