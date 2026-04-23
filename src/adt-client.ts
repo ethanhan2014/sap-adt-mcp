@@ -8,13 +8,16 @@ export class AdtClient {
   private cookieJar: Record<string, string> = {};
 
   constructor(private config: AdtConfig) {
-    this.http = axios.create({
+    const axiosConfig: Record<string, unknown> = {
       baseURL: buildBaseUrl(config),
       headers: { "sap-client": config.client, "sap-language": config.language },
-      auth: { username: config.username, password: config.password },
       httpsAgent: new https.Agent({ rejectUnauthorized: false }),
       timeout: 30000,
-    });
+    };
+    if (config.username && config.password) {
+      axiosConfig.auth = { username: config.username, password: config.password };
+    }
+    this.http = axios.create(axiosConfig);
 
     this.http.interceptors.response.use((resp) => {
       const setCookies = resp.headers["set-cookie"];
@@ -33,6 +36,12 @@ export class AdtClient {
 
   private getCookieString(): string {
     return Object.entries(this.cookieJar).map(([k, v]) => `${k}=${v}`).join("; ");
+  }
+
+  seedSession(cookies: Record<string, string>, csrfToken: string): void {
+    Object.assign(this.cookieJar, cookies);
+    this.csrfToken = csrfToken;
+    this.http.defaults.headers.common["Cookie"] = this.getCookieString();
   }
 
   private statefulHeaders(extra?: Record<string, string>): Record<string, string> {

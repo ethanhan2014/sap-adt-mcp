@@ -1,8 +1,8 @@
 # SAP ADT MCP Server
 
-MCP server for SAP ABAP Development Tools (ADT) REST API. Enables AI assistants to read ABAP source code, inspect DDIC objects, execute SQL queries, manage transports, analyze traces, control the debugger, and more.
+MCP server for SAP ABAP Development Tools (ADT) REST API. Enables AI assistants to read, create, and modify ABAP source code, inspect DDIC objects, execute SQL queries, manage transports, analyze traces, fetch short dumps, control the debugger, and more — across multiple SAP systems from a single server instance.
 
-## Tools (46)
+## Tools (66)
 
 ### Source Code & DDIC (11)
 
@@ -28,14 +28,22 @@ MCP server for SAP ABAP Development Tools (ADT) REST API. Enables AI assistants 
 | `get_transaction` | Fetch transaction details (package, app component) | `name` |
 | `get_package` | Fetch package contents (objects with types/descriptions) | `name` |
 
-### Create & Execute (4)
+### Create, Change & Execute (12)
 
 | Tool | Description | Input |
 |------|-------------|-------|
 | `create_abap_program` | Create, write source, and activate a program | `name`, `description`, `source`, `package?` |
+| `change_abap_program` | Modify an existing program (lock, write, activate, unlock) | `name`, `source` |
+| `create_abap_class` | Create, write source, and activate a class | `name`, `description`, `source`, `package?` |
+| `change_abap_class` | Modify an existing class (lock, write, activate, unlock) | `name`, `source` |
+| `create_interface` | Create, write source, and activate an interface | `name`, `description`, `source`, `package?` |
+| `change_interface` | Modify an existing interface (lock, write, activate, unlock) | `name`, `source` |
 | `create_cds_view` | Create, write source, and activate a CDS view | `name`, `description`, `source`, `package?` |
+| `change_cds_view` | Modify an existing CDS view (lock, write, activate, unlock) | `name`, `source` |
 | `execute_program` | Execute a program and return WRITE output | `name` |
 | `execute_sql` | Execute ABAP SQL query and return results as table | `query` |
+| `fetch_st22_dumps` | Fetch ST22 short dumps for a date | `date`, `user?`, `max_results?` |
+| `get_csrf_token` | Fetch CSRF token and session cookie | _(none)_ |
 
 ### Transport Management (7)
 
@@ -49,7 +57,7 @@ MCP server for SAP ABAP Development Tools (ADT) REST API. Enables AI assistants 
 | `delete_transport` | Delete a transport request | `transport_number` |
 | `list_system_users` | List SAP system users | _(none)_ |
 
-### Trace Management (7)
+### SAT Trace (7)
 
 | Tool | Description | Input |
 |------|-------------|-------|
@@ -61,6 +69,24 @@ MCP server for SAP ABAP Development Tools (ADT) REST API. Enables AI assistants 
 | `create_trace_config` | Create a trace collection configuration | `object_name`, `process_type?`, `description?` |
 | `delete_trace_config` | Delete a trace configuration | `config_id` |
 
+### ST05 Performance Trace (3)
+
+| Tool | Description | Input |
+|------|-------------|-------|
+| `enable_st05_trace` | Enable SQL/buffer/RFC/auth trace for a user | `user?`, `sql?`, `buffer?`, `rfc?`, `auth?`, `enqueue?`, `http?` |
+| `disable_st05_trace` | Disable all active performance traces | _(none)_ |
+| `get_st05_trace_state` | Get active trace types, user filter, and server info | _(none)_ |
+
+### Cross Trace (5)
+
+| Tool | Description | Input |
+|------|-------------|-------|
+| `enable_cross_trace` | Enable cross trace for RAP, OData, SADL, BAdI, Gateway | `user?`, `components?`, `max_traces?`, `trace_level?` |
+| `disable_cross_trace` | Disable a cross trace activation | `activation_id` |
+| `get_cross_trace_activations` | List active cross trace activations | _(none)_ |
+| `list_cross_traces` | List captured cross trace results | `user?` |
+| `get_cross_trace_records` | Get detailed records for a cross trace | `trace_id` |
+
 ### Service Binding (3)
 
 | Tool | Description | Input |
@@ -69,27 +95,32 @@ MCP server for SAP ABAP Development Tools (ADT) REST API. Enables AI assistants 
 | `publish_service_binding` | Publish an OData service binding | `binding_name`, `binding_version` |
 | `unpublish_service_binding` | Unpublish an OData service binding | `binding_name`, `binding_version` |
 
-### Debugger (11)
+### Debugger (14)
 
 | Tool | Description | Input |
 |------|-------------|-------|
 | `start_debugger_listener` | Start debugger listener (opens stateful session) | `terminal_id?`, `ide_id?`, `user?` |
 | `stop_debugger_listener` | Stop listener and close debug session | `terminal_id?`, `ide_id?`, `user?` |
+| `get_debugger_session` | Check if a debugger session is attached | `terminal_id?`, `ide_id?`, `user?` |
 | `set_debugger_breakpoint` | Set a breakpoint at a source location | `uri`, `line`, `user?` |
 | `delete_debugger_breakpoint` | Remove a breakpoint | `breakpoint_id` |
 | `attach_debugger` | Attach to a running ABAP debug session | `debug_mode?` |
 | `get_debugger_stack` | Get the current call stack | _(none)_ |
 | `get_debugger_variables` | Get variable values | `variable_names[]` |
 | `get_debugger_child_variables` | Get child/nested variable values | `variable_name` |
+| `set_debugger_variable_value` | Set a variable value during debugging | `variable_name`, `value` |
 | `debugger_step` | Step into/over/return/continue/terminate | `step_type`, `uri?` |
 | `debugger_goto_stack` | Navigate to a stack frame | `stack_type`, `position` |
-| `set_debugger_variable_value` | Set a variable value during debugging | `variable_name`, `value` |
+| `insert_watchpoint` | Set a watchpoint on a variable (pause on value change) | `variable_name`, `condition?` |
+| `get_watchpoints` | List all active watchpoints | _(none)_ |
 
-### Utility (1)
+### Multi-System (1)
 
 | Tool | Description | Input |
 |------|-------------|-------|
-| `get_csrf_token` | Fetch CSRF token and session cookie | _(none)_ |
+| `list_systems` | List all configured SAP systems with IDs, hostnames, and clients | _(none)_ |
+
+All tools accept an optional `system_id` parameter to target a specific SAP system. Omit to use the default (first configured) system.
 
 ## Prerequisites
 
@@ -104,6 +135,14 @@ MCP server for SAP ABAP Development Tools (ADT) REST API. Enables AI assistants 
 git clone https://github.com/ethanhan2014/sap-adt-mcp.git
 cd sap-adt-mcp
 npm install
+npm run build
+```
+
+## Configuration
+
+### Option 1: Single system via `.env`
+
+```bash
 cp .env.example .env
 ```
 
@@ -118,14 +157,6 @@ SAP_CLIENT=001
 SAP_LANGUAGE=EN
 ```
 
-Build the project:
-
-```bash
-npm run build
-```
-
-## Configuration
-
 | Variable | Description | Example |
 |----------|-------------|---------|
 | `SAP_HOSTNAME` | SAP system hostname | `your-sap-host.example.com` |
@@ -134,6 +165,39 @@ npm run build
 | `SAP_PASSWORD` | SAP password | `secret` |
 | `SAP_CLIENT` | SAP client | `001` |
 | `SAP_LANGUAGE` | Logon language (default: `EN`) | `EN` |
+
+### Option 2: Multiple systems via `systems.json`
+
+Create `systems.json` in the project root (see `systems.json.example`):
+
+```json
+[
+  {
+    "id": "DEV",
+    "hostname": "dev-system.sap.com",
+    "sysnr": "50",
+    "client": "001",
+    "username": "YOUR_USER",
+    "password": "YOUR_PASSWORD",
+    "language": "EN"
+  },
+  {
+    "id": "QA",
+    "hostname": "qa-system.sap.com",
+    "sysnr": "00",
+    "client": "001",
+    "authType": "certificate",
+    "certThumbprint": "YOUR_CERT_THUMBPRINT",
+    "language": "EN"
+  }
+]
+```
+
+When `systems.json` is present, `.env` is ignored for system configuration. The first system is the default. Use `system_id` on any tool call to target a specific system.
+
+Supported auth types:
+- **basic** (default) — username/password
+- **certificate** — X.509 client certificate via `certThumbprint`
 
 ## Usage
 
@@ -186,4 +250,4 @@ npx @modelcontextprotocol/inspector node dist/index.js
 - TypeScript + Node.js
 - MCP SDK (`@modelcontextprotocol/sdk`)
 - Axios for HTTP
-- SAP ADT REST API over HTTPS with Basic Auth
+- SAP ADT REST API over HTTPS with Basic Auth or X.509 Certificate

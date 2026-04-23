@@ -1,0 +1,20 @@
+[
+  {
+    "id": "DEV",
+    "hostname": "dev-system.sap.com",
+    "sysnr": "50",
+    "client": "001",
+    "username": "YOUR_USER",
+    "password": "YOUR_PASSWORD",
+    "language": "EN"
+  },
+  {
+    "id": "QA",
+    "hostname": "qa-system.sap.com",
+    "sysnr": "00",
+    "client": "001",
+    "authType": "certificate",
+    "certThumbprint": "YOUR_CERT_THUMBPRINT",
+    "language": "EN"
+  }
+]

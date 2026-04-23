@@ -5,6 +5,13 @@ export interface AdtConfig {
   password: string;
   client: string;
   language: string;
+  authType?: "basic" | "certificate";
+  certThumbprint?: string;
+}
+
+export interface SystemConfig extends AdtConfig {
+  id: string;
+  default?: boolean;
 }
 
 export function buildBaseUrl(config: AdtConfig): string {

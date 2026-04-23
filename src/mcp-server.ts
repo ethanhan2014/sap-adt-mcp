@@ -4,11 +4,11 @@ import {
   ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
-import { AdtClient } from "./adt-client.js";
 import { parseDataElementXml } from "./dtel-parser.js";
 import { parseSqlResultXml } from "./sql-parser.js";
 import { parseSnapDumps, formatSt22Dumps } from "./snap-parser.js";
-import { AdtConfig } from "./types.js";
+import { SystemConfig } from "./types.js";
+import { ClientPool } from "./client-pool.js";
 
 const NameSchema = z.object({ name: z.string() });
 const FunctionModuleSchema = z.object({
@@ -165,8 +165,12 @@ const DebuggerWatchpointSchema = z.object({
   condition: z.string().optional(),
 });
 
-export function createMcpServer(config: AdtConfig): Server {
-  const client = new AdtClient(config);
+const SYSTEM_ID_PROP = {
+  system_id: { type: "string", description: "SAP system ID (e.g. DEV). Omit to use default system." },
+} as const;
+
+export function createMcpServer(systems: SystemConfig[]): Server {
+  const pool = new ClientPool(systems);
 
   const server = new Server(
     { name: "sap-adt-mcp", version: "1.0.0" },
@@ -176,11 +180,20 @@ export function createMcpServer(config: AdtConfig): Server {
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
     tools: [
       {
+        name: "list_systems",
+        description: "List all configured SAP systems with their IDs, hostnames, and client numbers.",
+        inputSchema: {
+          type: "object" as const,
+          properties: {},
+          required: [],
+        },
+      },
+      {
         name: "get_abap_program",
         description: "Fetch ABAP program/report source code from SAP system",
         inputSchema: {
           type: "object" as const,
-          properties: { name: { type: "string", description: "Program name (e.g. ZHANZ_CMR)" } },
+          properties: { name: { type: "string", description: "Program name (e.g. ZHANZ_CMR)" }, ...SYSTEM_ID_PROP },
           required: ["name"],
         },
       },
@@ -189,7 +202,7 @@ export function createMcpServer(config: AdtConfig): Server {
         description: "Fetch DDIC data element definition from SAP system",
         inputSchema: {
           type: "object" as const,
-          properties: { name: { type: "string", description: "Data element name (e.g. MATNR)" } },
+          properties: { name: { type: "string", description: "Data element name (e.g. MATNR)" }, ...SYSTEM_ID_PROP },
           required: ["name"],
         },
       },
@@ -198,7 +211,7 @@ export function createMcpServer(config: AdtConfig): Server {
         description: "Fetch DDIC structure definition from SAP system",
         inputSchema: {
           type: "object" as const,
-          properties: { name: { type: "string", description: "Structure name (e.g. BAPISDHD1)" } },
+          properties: { name: { type: "string", description: "Structure name (e.g. BAPISDHD1)" }, ...SYSTEM_ID_PROP },
           required: ["name"],
         },
       },
@@ -210,6 +223,7 @@ export function createMcpServer(config: AdtConfig): Server {
           properties: {
             function_group: { type: "string", description: "Function group name (e.g. 2032)" },
             function_name: { type: "string", description: "Function module name (e.g. SD_SALESDOCUMENT_CREATE)" },
+            ...SYSTEM_ID_PROP,
           },
           required: ["function_group", "function_name"],
         },
@@ -219,7 +233,7 @@ export function createMcpServer(config: AdtConfig): Server {
         description: "Fetch ABAP class source code from SAP system",
         inputSchema: {
           type: "object" as const,
-          properties: { name: { type: "string", description: "Class name (e.g. CL_ABAP_TYPEDESCR)" } },
+          properties: { name: { type: "string", description: "Class name (e.g. CL_ABAP_TYPEDESCR)" }, ...SYSTEM_ID_PROP },
           required: ["name"],
         },
       },
@@ -228,7 +242,7 @@ export function createMcpServer(config: AdtConfig): Server {
         description: "Fetch CDS view DDL source definition from SAP system",
         inputSchema: {
           type: "object" as const,
-          properties: { name: { type: "string", description: "CDS view name (e.g. I_BUSINESSPARTNER)" } },
+          properties: { name: { type: "string", description: "CDS view name (e.g. I_BUSINESSPARTNER)" }, ...SYSTEM_ID_PROP },
           required: ["name"],
         },
       },
@@ -237,7 +251,7 @@ export function createMcpServer(config: AdtConfig): Server {
         description: "Execute an ABAP program/report on the SAP system and return the list output. The program must be activated. Returns the WRITE output as plain text.",
         inputSchema: {
           type: "object" as const,
-          properties: { name: { type: "string", description: "Program name to execute (e.g. ZHANZ_MCP_HELLO)" } },
+          properties: { name: { type: "string", description: "Program name to execute (e.g. ZHANZ_MCP_HELLO)" }, ...SYSTEM_ID_PROP },
           required: ["name"],
         },
       },
@@ -251,6 +265,7 @@ export function createMcpServer(config: AdtConfig): Server {
             description: { type: "string", description: "Short description (max 70 chars)" },
             source: { type: "string", description: "CDS DDL source code including annotations and define view statement" },
             package: { type: "string", description: "Development package (default: $TMP)" },
+            ...SYSTEM_ID_PROP,
           },
           required: ["name", "description", "source"],
         },
@@ -263,6 +278,7 @@ export function createMcpServer(config: AdtConfig): Server {
           properties: {
             name: { type: "string", description: "CDS view name (e.g. ZHANZ_MY_VIEW)" },
             source: { type: "string", description: "Complete new CDS DDL source code including all annotations and define view statement" },
+            ...SYSTEM_ID_PROP,
           },
           required: ["name", "source"],
         },
@@ -275,6 +291,7 @@ export function createMcpServer(config: AdtConfig): Server {
           properties: {
             name: { type: "string", description: "Program name (e.g. ZHANZ_TEST)" },
             source: { type: "string", description: "Complete new ABAP source code. Must start with REPORT statement." },
+            ...SYSTEM_ID_PROP,
           },
           required: ["name", "source"],
         },
@@ -289,6 +306,7 @@ export function createMcpServer(config: AdtConfig): Server {
             description: { type: "string", description: "Short description of the program (max 70 chars)" },
             source: { type: "string", description: "ABAP source code. Must start with REPORT statement." },
             package: { type: "string", description: "Development package (default: $TMP for local objects)" },
+            ...SYSTEM_ID_PROP,
           },
           required: ["name", "description", "source"],
         },
@@ -303,6 +321,7 @@ export function createMcpServer(config: AdtConfig): Server {
             description: { type: "string", description: "Short description of the class (max 70 chars)" },
             source: { type: "string", description: "ABAP class source code. Must include CLASS definition and IMPLEMENTATION." },
             package: { type: "string", description: "Development package (default: $TMP for local objects)" },
+            ...SYSTEM_ID_PROP,
           },
           required: ["name", "description", "source"],
         },
@@ -315,6 +334,7 @@ export function createMcpServer(config: AdtConfig): Server {
           properties: {
             name: { type: "string", description: "Class name (e.g. ZCL_MY_CLASS)" },
             source: { type: "string", description: "Complete new ABAP class source code including CLASS definition and IMPLEMENTATION." },
+            ...SYSTEM_ID_PROP,
           },
           required: ["name", "source"],
         },
@@ -329,6 +349,7 @@ export function createMcpServer(config: AdtConfig): Server {
             description: { type: "string", description: "Short description of the interface (max 70 chars)" },
             source: { type: "string", description: "ABAP interface source code. Must include INTERFACE definition." },
             package: { type: "string", description: "Development package (default: $TMP for local objects)" },
+            ...SYSTEM_ID_PROP,
           },
           required: ["name", "description", "source"],
         },
@@ -341,6 +362,7 @@ export function createMcpServer(config: AdtConfig): Server {
           properties: {
             name: { type: "string", description: "Interface name (e.g. ZIF_MY_INTERFACE)" },
             source: { type: "string", description: "Complete new ABAP interface source code including INTERFACE definition." },
+            ...SYSTEM_ID_PROP,
           },
           required: ["name", "source"],
         },
@@ -350,7 +372,7 @@ export function createMcpServer(config: AdtConfig): Server {
         description: "Fetch ABAP function group source code from SAP system",
         inputSchema: {
           type: "object" as const,
-          properties: { name: { type: "string", description: "Function group name (e.g. SVAT)" } },
+          properties: { name: { type: "string", description: "Function group name (e.g. SVAT)" }, ...SYSTEM_ID_PROP },
           required: ["name"],
         },
       },
@@ -359,7 +381,7 @@ export function createMcpServer(config: AdtConfig): Server {
         description: "Fetch ABAP include source code from SAP system",
         inputSchema: {
           type: "object" as const,
-          properties: { name: { type: "string", description: "Include name (e.g. LSVATF01)" } },
+          properties: { name: { type: "string", description: "Include name (e.g. LSVATF01)" }, ...SYSTEM_ID_PROP },
           required: ["name"],
         },
       },
@@ -368,7 +390,7 @@ export function createMcpServer(config: AdtConfig): Server {
         description: "Fetch ABAP interface source code from SAP system",
         inputSchema: {
           type: "object" as const,
-          properties: { name: { type: "string", description: "Interface name (e.g. IF_ABAP_TIMER_HANDLER)" } },
+          properties: { name: { type: "string", description: "Interface name (e.g. IF_ABAP_TIMER_HANDLER)" }, ...SYSTEM_ID_PROP },
           required: ["name"],
         },
       },
@@ -377,7 +399,7 @@ export function createMcpServer(config: AdtConfig): Server {
         description: "Fetch ABAP database table definition from SAP system",
         inputSchema: {
           type: "object" as const,
-          properties: { name: { type: "string", description: "Table name (e.g. VBAK)" } },
+          properties: { name: { type: "string", description: "Table name (e.g. VBAK)" }, ...SYSTEM_ID_PROP },
           required: ["name"],
         },
       },
@@ -386,7 +408,7 @@ export function createMcpServer(config: AdtConfig): Server {
         description: "Fetch DDIC domain definition from SAP system",
         inputSchema: {
           type: "object" as const,
-          properties: { name: { type: "string", description: "Domain name (e.g. MATNR)" } },
+          properties: { name: { type: "string", description: "Domain name (e.g. MATNR)" }, ...SYSTEM_ID_PROP },
           required: ["name"],
         },
       },
@@ -395,7 +417,7 @@ export function createMcpServer(config: AdtConfig): Server {
         description: "Fetch ABAP transaction details (package, application component) from SAP system",
         inputSchema: {
           type: "object" as const,
-          properties: { name: { type: "string", description: "Transaction code (e.g. VA01)" } },
+          properties: { name: { type: "string", description: "Transaction code (e.g. VA01)" }, ...SYSTEM_ID_PROP },
           required: ["name"],
         },
       },
@@ -404,7 +426,7 @@ export function createMcpServer(config: AdtConfig): Server {
         description: "Fetch ABAP package contents (list of objects with types and descriptions) from SAP system",
         inputSchema: {
           type: "object" as const,
-          properties: { name: { type: "string", description: "Package name (e.g. $TMP)" } },
+          properties: { name: { type: "string", description: "Package name (e.g. $TMP)" }, ...SYSTEM_ID_PROP },
           required: ["name"],
         },
       },
@@ -416,6 +438,7 @@ export function createMcpServer(config: AdtConfig): Server {
           properties: {
             query: { type: "string", description: "Search query (e.g. Z_MY* or CL_ABAP*)" },
             max_results: { type: "number", description: "Maximum results to return (default: 100)" },
+            ...SYSTEM_ID_PROP,
           },
           required: ["query"],
         },
@@ -430,6 +453,7 @@ export function createMcpServer(config: AdtConfig): Server {
             uri: { type: "string", description: "Object URI (e.g. /sap/bc/adt/programs/programs/ztest)" },
             devclass: { type: "string", description: "Development class/package (e.g. ZPACKAGE)" },
             operation: { type: "string", description: "Operation (default: I_CTS_OBJECT_CHECK)" },
+            ...SYSTEM_ID_PROP,
           },
           required: ["uri", "devclass"],
         },
@@ -444,6 +468,7 @@ export function createMcpServer(config: AdtConfig): Server {
             description: { type: "string", description: "Transport description text" },
             ref: { type: "string", description: "Object reference URI" },
             operation: { type: "string", description: "Operation (default: I_CTS_OBJECT_CHECK)" },
+            ...SYSTEM_ID_PROP,
           },
           required: ["devclass", "description"],
         },
@@ -453,7 +478,7 @@ export function createMcpServer(config: AdtConfig): Server {
         description: "List all modifiable transport requests for the current SAP user. Returns TR number, type, status, date, and description.",
         inputSchema: {
           type: "object" as const,
-          properties: {},
+          properties: { ...SYSTEM_ID_PROP },
           required: [],
         },
       },
@@ -464,6 +489,7 @@ export function createMcpServer(config: AdtConfig): Server {
           type: "object" as const,
           properties: {
             transport_number: { type: "string", description: "Transport number (e.g. EUPK902297)" },
+            ...SYSTEM_ID_PROP,
           },
           required: ["transport_number"],
         },
@@ -475,6 +501,7 @@ export function createMcpServer(config: AdtConfig): Server {
           type: "object" as const,
           properties: {
             transport_number: { type: "string", description: "Transport number (e.g. DEVK900123)" },
+            ...SYSTEM_ID_PROP,
           },
           required: ["transport_number"],
         },
@@ -486,6 +513,7 @@ export function createMcpServer(config: AdtConfig): Server {
           type: "object" as const,
           properties: {
             transport_number: { type: "string", description: "Transport number (e.g. DEVK900123)" },
+            ...SYSTEM_ID_PROP,
           },
           required: ["transport_number"],
         },
@@ -495,7 +523,7 @@ export function createMcpServer(config: AdtConfig): Server {
         description: "List SAP system users. Useful for transport ownership and user lookups.",
         inputSchema: {
           type: "object" as const,
-          properties: {},
+          properties: { ...SYSTEM_ID_PROP },
           required: [],
         },
       },
@@ -507,6 +535,7 @@ export function createMcpServer(config: AdtConfig): Server {
           type: "object" as const,
           properties: {
             user: { type: "string", description: "SAP username (default: current user)" },
+            ...SYSTEM_ID_PROP,
           },
           required: [],
         },
@@ -518,6 +547,7 @@ export function createMcpServer(config: AdtConfig): Server {
           type: "object" as const,
           properties: {
             trace_id: { type: "string", description: "Trace ID from list_traces" },
+            ...SYSTEM_ID_PROP,
           },
           required: ["trace_id"],
         },
@@ -529,6 +559,7 @@ export function createMcpServer(config: AdtConfig): Server {
           type: "object" as const,
           properties: {
             trace_id: { type: "string", description: "Trace ID from list_traces" },
+            ...SYSTEM_ID_PROP,
           },
           required: ["trace_id"],
         },
@@ -540,6 +571,7 @@ export function createMcpServer(config: AdtConfig): Server {
           type: "object" as const,
           properties: {
             trace_id: { type: "string", description: "Trace ID from list_traces" },
+            ...SYSTEM_ID_PROP,
           },
           required: ["trace_id"],
         },
@@ -551,6 +583,7 @@ export function createMcpServer(config: AdtConfig): Server {
           type: "object" as const,
           properties: {
             trace_id: { type: "string", description: "Trace ID to delete" },
+            ...SYSTEM_ID_PROP,
           },
           required: ["trace_id"],
         },
@@ -566,6 +599,7 @@ export function createMcpServer(config: AdtConfig): Server {
             description: { type: "string", description: "Description for the trace configuration" },
             max_executions: { type: "number", description: "Maximum number of executions to capture (default: 10)" },
             object_type: { type: "string", description: "Object type: any, report, transaction, functionmodule, url (default: any)" },
+            ...SYSTEM_ID_PROP,
           },
           required: ["object_name"],
         },
@@ -577,6 +611,7 @@ export function createMcpServer(config: AdtConfig): Server {
           type: "object" as const,
           properties: {
             config_id: { type: "string", description: "Configuration ID to delete" },
+            ...SYSTEM_ID_PROP,
           },
           required: ["config_id"],
         },
@@ -589,6 +624,7 @@ export function createMcpServer(config: AdtConfig): Server {
           type: "object" as const,
           properties: {
             binding_name: { type: "string", description: "Service binding name (e.g. ZUI_TRAVEL_O4)" },
+            ...SYSTEM_ID_PROP,
           },
           required: ["binding_name"],
         },
@@ -601,6 +637,7 @@ export function createMcpServer(config: AdtConfig): Server {
           properties: {
             binding_name: { type: "string", description: "Service binding name" },
             binding_version: { type: "string", description: "Service version (e.g. 0001)" },
+            ...SYSTEM_ID_PROP,
           },
           required: ["binding_name", "binding_version"],
         },
@@ -613,6 +650,7 @@ export function createMcpServer(config: AdtConfig): Server {
           properties: {
             binding_name: { type: "string", description: "Service binding name" },
             binding_version: { type: "string", description: "Service version (e.g. 0001)" },
+            ...SYSTEM_ID_PROP,
           },
           required: ["binding_name", "binding_version"],
         },
@@ -627,6 +665,7 @@ export function createMcpServer(config: AdtConfig): Server {
             terminal_id: { type: "string", description: "Terminal identifier (default: MCP_TERMINAL)" },
             ide_id: { type: "string", description: "IDE identifier (default: MCP_IDE)" },
             user: { type: "string", description: "SAP username to debug (default: current user)" },
+            ...SYSTEM_ID_PROP,
           },
           required: [],
         },
@@ -640,6 +679,7 @@ export function createMcpServer(config: AdtConfig): Server {
             terminal_id: { type: "string", description: "Terminal identifier (default: MCP_TERMINAL)" },
             ide_id: { type: "string", description: "IDE identifier (default: MCP_IDE)" },
             user: { type: "string", description: "SAP username (default: current user)" },
+            ...SYSTEM_ID_PROP,
           },
           required: [],
         },
@@ -653,6 +693,7 @@ export function createMcpServer(config: AdtConfig): Server {
             uri: { type: "string", description: "Object source URI (e.g. /sap/bc/adt/programs/programs/ztest/source/main)" },
             line: { type: "number", description: "Line number for breakpoint" },
             user: { type: "string", description: "SAP username (default: current user)" },
+            ...SYSTEM_ID_PROP,
           },
           required: ["uri", "line"],
         },
@@ -664,6 +705,7 @@ export function createMcpServer(config: AdtConfig): Server {
           type: "object" as const,
           properties: {
             breakpoint_id: { type: "string", description: "Breakpoint ID to delete" },
+            ...SYSTEM_ID_PROP,
           },
           required: ["breakpoint_id"],
         },
@@ -675,6 +717,7 @@ export function createMcpServer(config: AdtConfig): Server {
           type: "object" as const,
           properties: {
             debug_mode: { type: "string", description: "Debugging mode (default: user)" },
+            ...SYSTEM_ID_PROP,
           },
           required: [],
         },
@@ -684,7 +727,7 @@ export function createMcpServer(config: AdtConfig): Server {
         description: "Get the current call stack in the debugger",
         inputSchema: {
           type: "object" as const,
-          properties: {},
+          properties: { ...SYSTEM_ID_PROP },
           required: [],
         },
       },
@@ -695,6 +738,7 @@ export function createMcpServer(config: AdtConfig): Server {
           type: "object" as const,
           properties: {
             variable_names: { type: "array", description: "Array of variable names to inspect" },
+            ...SYSTEM_ID_PROP,
           },
           required: ["variable_names"],
         },
@@ -706,6 +750,7 @@ export function createMcpServer(config: AdtConfig): Server {
           type: "object" as const,
           properties: {
             variable_name: { type: "string", description: "Parent variable name to expand" },
+            ...SYSTEM_ID_PROP,
           },
           required: ["variable_name"],
         },
@@ -718,6 +763,7 @@ export function createMcpServer(config: AdtConfig): Server {
           properties: {
             step_type: { type: "string", description: "Step type: stepInto, stepOver, stepReturn, stepContinue, stepRunToLine, stepJumpToLine, terminateDebuggee" },
             uri: { type: "string", description: "Source URI (required for stepRunToLine/stepJumpToLine)" },
+            ...SYSTEM_ID_PROP,
           },
           required: ["step_type"],
         },
@@ -730,6 +776,7 @@ export function createMcpServer(config: AdtConfig): Server {
           properties: {
             stack_type: { type: "string", description: "Stack type identifier" },
             position: { type: "number", description: "Stack position (0-based)" },
+            ...SYSTEM_ID_PROP,
           },
           required: ["stack_type", "position"],
         },
@@ -742,6 +789,7 @@ export function createMcpServer(config: AdtConfig): Server {
           properties: {
             variable_name: { type: "string", description: "Variable name to modify" },
             value: { type: "string", description: "New value to set" },
+            ...SYSTEM_ID_PROP,
           },
           required: ["variable_name", "value"],
         },
@@ -755,6 +803,7 @@ export function createMcpServer(config: AdtConfig): Server {
             terminal_id: { type: "string", description: "Terminal identifier (default: MCP_TERMINAL)" },
             ide_id: { type: "string", description: "IDE identifier (default: MCP_IDE)" },
             user: { type: "string", description: "SAP username (default: current user)" },
+            ...SYSTEM_ID_PROP,
           },
           required: [],
         },
@@ -767,6 +816,7 @@ export function createMcpServer(config: AdtConfig): Server {
           properties: {
             variable_name: { type: "string", description: "Variable name to watch (e.g. VBAK-FAKSK)" },
             condition: { type: "string", description: "Optional condition expression for the watchpoint" },
+            ...SYSTEM_ID_PROP,
           },
           required: ["variable_name"],
         },
@@ -776,7 +826,7 @@ export function createMcpServer(config: AdtConfig): Server {
         description: "List all active watchpoints in the current debug session.",
         inputSchema: {
           type: "object" as const,
-          properties: {},
+          properties: { ...SYSTEM_ID_PROP },
           required: [],
         },
       },
@@ -794,6 +844,7 @@ export function createMcpServer(config: AdtConfig): Server {
             http: { type: "boolean", description: "Enable HTTP trace (default: false)" },
             auth: { type: "boolean", description: "Enable authorization trace (default: false)" },
             stack_trace: { type: "boolean", description: "Include ABAP stack traces (default: true)" },
+            ...SYSTEM_ID_PROP,
           },
           required: [],
         },
@@ -803,7 +854,7 @@ export function createMcpServer(config: AdtConfig): Server {
         description: "Disable ST05 performance trace. Stops all active trace collection on the server.",
         inputSchema: {
           type: "object" as const,
-          properties: {},
+          properties: { ...SYSTEM_ID_PROP },
           required: [],
         },
       },
@@ -812,7 +863,7 @@ export function createMcpServer(config: AdtConfig): Server {
         description: "Get the current ST05 performance trace state — shows which trace types are active, the user filter, and server info.",
         inputSchema: {
           type: "object" as const,
-          properties: {},
+          properties: { ...SYSTEM_ID_PROP },
           required: [],
         },
       },
@@ -829,6 +880,7 @@ export function createMcpServer(config: AdtConfig): Server {
             components: { type: "array", items: { type: "string" }, description: "Component names to trace (default: all available components). Use list_cross_trace_components to see available names." },
             trace_level: { type: "number", description: "Trace detail level 1-3 (default: 2)" },
             request_type_filter: { type: "string", description: "Filter by request type: T=Transaction, C=RFC, U=URL, O=OData V2, 4=OData V4, B=Batch, etc. (default: all)" },
+            ...SYSTEM_ID_PROP,
           },
           required: [],
         },
@@ -840,6 +892,7 @@ export function createMcpServer(config: AdtConfig): Server {
           type: "object" as const,
           properties: {
             activation_id: { type: "string", description: "Activation ID to delete" },
+            ...SYSTEM_ID_PROP,
           },
           required: ["activation_id"],
         },
@@ -849,7 +902,7 @@ export function createMcpServer(config: AdtConfig): Server {
         description: "List all active ABAP Cross Trace activations. Shows activation IDs, user filters, enabled state, expiry, and component count.",
         inputSchema: {
           type: "object" as const,
-          properties: {},
+          properties: { ...SYSTEM_ID_PROP },
           required: [],
         },
       },
@@ -860,6 +913,7 @@ export function createMcpServer(config: AdtConfig): Server {
           type: "object" as const,
           properties: {
             user: { type: "string", description: "SAP username (default: current user)" },
+            ...SYSTEM_ID_PROP,
           },
           required: [],
         },
@@ -871,6 +925,7 @@ export function createMcpServer(config: AdtConfig): Server {
           type: "object" as const,
           properties: {
             trace_id: { type: "string", description: "Trace ID from list_cross_traces" },
+            ...SYSTEM_ID_PROP,
           },
           required: ["trace_id"],
         },
@@ -880,7 +935,7 @@ export function createMcpServer(config: AdtConfig): Server {
         description: "Fetch a CSRF token and session cookie from the SAP system. Useful for making authenticated POST/PUT/DELETE requests to ADT or other SAP ICF services.",
         inputSchema: {
           type: "object" as const,
-          properties: {},
+          properties: { ...SYSTEM_ID_PROP },
           required: [],
         },
       },
@@ -889,7 +944,7 @@ export function createMcpServer(config: AdtConfig): Server {
         description: "Execute an ABAP SQL query on the SAP system and return results as a table. Use standard ABAP SQL syntax (e.g. SELECT vbeln, erdat FROM vbak UP TO 10 ROWS).",
         inputSchema: {
           type: "object" as const,
-          properties: { query: { type: "string", description: "ABAP SQL query" } },
+          properties: { query: { type: "string", description: "ABAP SQL query" }, ...SYSTEM_ID_PROP },
           required: ["query"],
         },
       },
@@ -905,6 +960,7 @@ export function createMcpServer(config: AdtConfig): Server {
             date: { type: "string", description: "Date in YYYYMMDD or YYYY-MM-DD format (e.g. 20260402)" },
             user: { type: "string", description: "Filter by SAP username (e.g. WF-BATCH)" },
             max_results: { type: "number", description: "Max dumps to return (default: 100)", default: 100 },
+            ...SYSTEM_ID_PROP,
           },
           required: ["date"],
         },
@@ -916,6 +972,16 @@ export function createMcpServer(config: AdtConfig): Server {
     const { name, arguments: args } = request.params;
 
     try {
+      if (name === "list_systems") {
+        const systemList = pool.getSystems()
+          .map((s) => `${s.id}: ${s.hostname} (client ${s.client}, auth: ${s.authType})${s.isDefault ? " [default]" : ""}`)
+          .join("\n");
+        return { content: [{ type: "text", text: systemList }] };
+      }
+
+      const systemId = (args as Record<string, unknown>)?.system_id as string | undefined;
+      const client = await pool.getClient(systemId);
+
       switch (name) {
         case "get_abap_program": {
           const { name: progName } = NameSchema.parse(args);
@@ -1428,7 +1494,7 @@ export function createMcpServer(config: AdtConfig): Server {
           const summary = Object.entries(counts)
             .sort((a, b) => b[1] - a[1])
             .slice(0, 10)
-            .map(([name, count]) => `  ${name}: ${count}`)
+            .map(([cname, count]) => `  ${cname}: ${count}`)
             .join("\n");
           const lines = [
             `${traces.length} cross trace(s):\n`,
@@ -1463,11 +1529,11 @@ export function createMcpServer(config: AdtConfig): Server {
           const dateStr = parsed.date.replace(/-/g, "");
           const maxRows = parsed.max_results ?? 100;
 
-          let query = `SELECT datum, uzeit, uname, ahost, flist FROM snap WHERE datum = '${dateStr}' AND seqno = '000'`;
+          let query = `SELECT * FROM snap UP TO ${maxRows} ROWS WHERE datum = '${dateStr}' AND seqno = '000'`;
           if (parsed.user) {
             query += ` AND uname = '${parsed.user.toUpperCase()}'`;
           }
-          query += ` ORDER BY uzeit DESCENDING UP TO ${maxRows} ROWS`;
+          query += ` ORDER BY uzeit DESCENDING`;
 
           const xml = await client.executeFreestyleSql(query);
           const dumps = parseSnapDumps(xml);
